@@ -1,0 +1,7 @@
+target,MAE_model,MAE_base_r5,MAE_base_career,MAE_gain_vs_r5_%
+perf_points,11.68,12.76,12.71,8.5
+postContactMetres,11.41,12.12,15.06,5.83
+runMetres,27.66,29.93,30.47,7.6
+runs,2.74,2.95,3.08,7.17
+runsHitup,2.04,2.11,2.18,3.57
+tackles,5.23,5.89,6.27,11.2
