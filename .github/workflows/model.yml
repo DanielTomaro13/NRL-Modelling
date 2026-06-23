@@ -44,12 +44,19 @@ jobs:
       - name: Champion Data analysis + backtest + feature importance
         run: python src/analysis.py
 
+      - name: Train try-scorer model + backtest + predict
+        run: python src/tryscorer.py
+
       - name: Fetch Sportsbet + Ladbrokes odds
         run: python src/odds.py
         continue-on-error: true
 
-      - name: Price markets + compute edges
+      - name: Price stat markets + compute edges
         run: python src/pricing.py price
+        continue-on-error: true
+
+      - name: Price try-scorer markets
+        run: python src/pricing.py tries
         continue-on-error: true
 
       - name: Build site

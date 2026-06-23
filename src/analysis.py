@@ -261,7 +261,7 @@ def main():
         print("  importance skipped:", repr(e))
         imp = {}
 
-    out = {"generated": pd.Timestamp.utcnow().isoformat(),
+    out = {"generated": pd.Timestamp.now('UTC').isoformat(),
            "targets": TARGETS, "target_label": TARGET_LABEL,
            "backtest": bt, "champion": ci, "importance": imp, "dispersion": disp}
     os.makedirs("reports", exist_ok=True)

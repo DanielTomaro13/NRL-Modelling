@@ -60,7 +60,19 @@ def load_inputs():
         analysis = json.load(open("reports/analysis.json"))
     except Exception:
         analysis = {}
-    return preds, odds, edges, analysis
+    try:
+        tries = pd.read_parquet("reports/tryscorer_predictions.parquet")
+    except Exception:
+        tries = pd.DataFrame()
+    try:
+        try_edges = pd.read_parquet("reports/try_edges.parquet")
+    except Exception:
+        try_edges = pd.DataFrame()
+    try:
+        tryinfo = json.load(open("reports/tryscorer.json"))
+    except Exception:
+        tryinfo = {}
+    return preds, odds, edges, analysis, tries, try_edges, tryinfo
 
 
 def best_try_price(odds, pid):
@@ -89,6 +101,7 @@ def page(title, body, active, updated):
         f'<a class="{ "on" if k==active else "" }" href="{href}">{label}</a>'
         for k, href, label in [("index", "index.html", "Predictions"),
                                ("value", "value.html", "Value"),
+                               ("tries", "tries.html", "Tries"),
                                ("analysis", "analysis.html", "Analysis"),
                                ("backtest", "backtest.html", "Backtest"),
                                ("lab", "lab.html", "Model Lab")])
@@ -242,7 +255,37 @@ def _stat_cards(analysis):
     return "".join(cards)
 
 
-def build_backtest(analysis, updated):
+def build_try_panel(tryinfo):
+    bt = tryinfo.get("backtest", {})
+    if not bt:
+        return ""
+    rel = bt.get("reliability", {})
+    rel_pts = list(zip(rel.get("pred", []), rel.get("emp", [])))
+    rel_svg = C.line_chart([{"name": "model", "color": C.ACC, "points": rel_pts}],
+                           (0, 1), (0, 1), width=520, height=340, diagonal=True,
+                           x_label="model probability the player scores",
+                           y_label="how often they actually scored") if rel_pts else ""
+    m = bt.get("model", {}); bpos = bt.get("baseline_position", {}); btr = bt.get("baseline_trailing5", {})
+    def cmp_row(label, d):
+        return (f'<tr><td class="pl">{label}</td><td>{d.get("brier","–")}</td>'
+                f'<td>{d.get("logloss","–")}</td><td>{d.get("auc","–")}</td></tr>')
+    return f"""<section class="panel">
+<h3>Try-scorer model <span class="tag">classification</span></h3>
+<p class="lead">A Poisson tries model, scored on whether a player got over the line (1+).
+Predicting tries is genuinely hard — but the probabilities are well calibrated and rank
+scorers better than the position base rate or recent form.</p>
+<div class="split"><div>{rel_svg}</div>
+<div class="note"><p>Reliability of the anytime-try probability across {bt.get('n_test',0):,}
+out-of-sample player-matches (base score rate {bt.get('base_rate','–')}).</p>
+<p class="big">{bt.get('calibration_error','–')}</p>
+<p class="sub">mean gap between predicted and actual scoring rate.</p></div></div>
+<div class="tablewrap"><table><thead><tr><th class="pl">Model</th><th>Brier ↓</th>
+<th>Log loss ↓</th><th>AUC ↑</th></tr></thead><tbody>
+{cmp_row('Try model', m)}{cmp_row('Position base rate', bpos)}{cmp_row('Trailing-5 form', btr)}
+</tbody></table></div></section>"""
+
+
+def build_backtest(analysis, updated, tryinfo=None):
     bt = analysis.get("backtest", {})
     if not bt:
         return page("Backtest", "<div class='hero'><h1>Backtest</h1></div>"
@@ -284,6 +327,8 @@ model says 70%, it lands ~70% of the time.</p>
 
 <section class="panel"><h3>Per-stat detail</h3>
 <div class="grid2">{_stat_cards(analysis)}</div></section>
+
+{build_try_panel(tryinfo or {})}
 
 <p class="disclaim">Honest caveat: we don't have a historical archive of bookmaker prices, so this
 is a forecast-accuracy and probability-calibration backtest — not a profit/ROI claim. It shows the
@@ -338,6 +383,66 @@ hookers tackle, halves drive performance points. The model conditions on positio
 <div class="tablewrap"><table><thead><tr><th class="pl">Position</th>{phead}</tr></thead>
 <tbody>{prows}</tbody></table></div></section>"""
     return page(f"Analysis — {season}", body, "analysis", updated)
+
+
+def build_tries(tries, try_edges, tryinfo, preds, updated):
+    if tries.empty:
+        body = """<div class="hero"><h1>Try scorers</h1></div>
+<div class="banner">Run <code>python src/tryscorer.py</code> to generate try-scorer probabilities.</div>"""
+        return page("Try scorers", body, "tries", updated)
+    # best price + EV per player (anytime) from try_edges
+    ev_by_pid = {}
+    if not try_edges.empty:
+        for _, e in try_edges[try_edges.market == "anytime"].iterrows():
+            ev_by_pid[e["playerId"]] = e
+    bt = tryinfo.get("backtest", {})
+    auc = bt.get("model", {}).get("auc")
+    n_val = int((try_edges.ev_pct > 0).sum()) if len(try_edges) else 0
+    # group predictions by match, via preds match map (playerId -> matchId/teams already in tries)
+    secs = []
+    for mid, g in tries.groupby("matchId"):
+        g = g.sort_values("p_anytime", ascending=False)
+        teams = f'{g.iloc[0]["team"]} vs {g.iloc[0]["opp"]}'
+        rows = []
+        for _, p in g.head(8).iterrows():
+            pid = p["playerId"]
+            e = ev_by_pid.get(pid)
+            if e is not None and e["ev_pct"] is not None:
+                ev = e["ev_pct"]
+                # guard implausible edges (usually a lineup/name mismatch)
+                credible = 0 < ev <= 40
+                cls = "pos" if credible else ""
+                price = f'{e["price"]:.2f} <i>{esc(e["book"])[:3]}</i>'
+                evtxt = (f'<b>{ev:+.0f}%</b>' if credible
+                         else f'<span title="implausible — likely a lineup/name mismatch">{ev:+.0f}%?</span>')
+                odds_cell = f'<td class="{cls}">${price}</td><td class="{cls}">{evtxt}</td>'
+            else:
+                odds_cell = '<td>–</td><td>–</td>'
+            rows.append(
+                f'<tr><td class="pl"><b>{esc(p["name"])}</b><span class="pos">{esc(p["position"])}</span>'
+                f'<span class="tm">{esc(p["team"])}</span></td>'
+                f'<td><b>{p["p_anytime"]*100:.0f}%</b></td><td>{p["p_2plus"]*100:.0f}%</td>'
+                f'<td class="mut">{fmt_odds_cell(p["p_anytime"])}</td>{odds_cell}</tr>')
+        secs.append(f"""<section class="match"><h3>{esc(teams)}</h3>
+<div class="tablewrap"><table>
+<thead><tr><th class="pl">Player</th><th>Anytime</th><th>2+</th><th>Fair</th>
+<th>Best price</th><th>EV</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div></section>""")
+    intro = (f'Model probability each player scores, with the best live anytime price across '
+             f'Sportsbet &amp; Ladbrokes and the model’s edge. The try model ranks scorers '
+             f'at AUC {auc} out of sample — see the <a href="backtest.html">backtest</a>.'
+             if auc else 'Model try probabilities with live odds.')
+    banner = (f'<div class="banner pos">{n_val} anytime markets show model value (0–40% EV).</div>'
+              if n_val else '')
+    body = f"""<div class="hero"><h1>Try scorers</h1><p>{intro}</p></div>
+{banner}
+<p class="disclaim">Big EV numbers (flagged “?”) almost always mean a team-list or name mismatch,
+not real value — trust the credible single-digit/low edges and check the lineup.</p>
+{''.join(secs)}"""
+    return page("Try scorers", body, "tries", updated)
+
+
+def fmt_odds_cell(p):
+    return f"${1/p:.2f}" if p and p > 1e-9 else "–"
 
 
 def build_lab(analysis, updated):
@@ -431,7 +536,8 @@ td.ch{text-align:left;white-space:normal}
 .edge{display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;border-radius:7px;background:var(--chip);
 font-size:12px;color:var(--mut)}.edge.pos{background:var(--posbg);color:var(--pos)}
 .edge b{color:inherit}.try{display:inline-block;padding:2px 7px;border-radius:7px;background:var(--chip);
-font-size:12px;color:var(--mut)}.try i{color:var(--acc);font-style:normal}
+font-size:12px;color:var(--mut)}.try i{color:var(--acc);font-style:normal}.try.pos{background:var(--posbg);color:var(--pos)}
+td.pos{color:var(--pos)}td.mut{color:var(--mut)}td i{color:var(--acc);font-style:normal;font-size:11px}
 table.value td:first-child{text-align:left}table.value tr.pos td b{color:var(--pos)}
 .prose{max-width:780px}.prose h3{margin:22px 0 6px;font-size:17px}.prose p{color:#c4d2de}
 .prose code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px}
@@ -568,7 +674,7 @@ function drawCurve(mu,sd,line){
 
 def main():
     rnd = int(sys.argv[1]) if len(sys.argv) > 1 else None
-    preds, odds, edges, analysis = load_inputs()
+    preds, odds, edges, analysis, tries, try_edges, tryinfo = load_inputs()
     if rnd is None:
         rnd = int(preds["roundNumber"].iloc[0]) if "roundNumber" in preds else 0
     updated = now_aest().strftime("%a %d %b %Y, %I:%M%p AEST")
@@ -579,8 +685,9 @@ def main():
     open(f"{DOCS}/app.js", "w").write(APP_JS)
     open(f"{DOCS}/index.html", "w").write(build_index(preds, odds, edges, rnd, updated))
     open(f"{DOCS}/value.html", "w").write(build_value(edges, updated))
+    open(f"{DOCS}/tries.html", "w").write(build_tries(tries, try_edges, tryinfo, preds, updated))
     open(f"{DOCS}/analysis.html", "w").write(build_analysis(analysis, updated))
-    open(f"{DOCS}/backtest.html", "w").write(build_backtest(analysis, updated))
+    open(f"{DOCS}/backtest.html", "w").write(build_backtest(analysis, updated, tryinfo))
     open(f"{DOCS}/lab.html", "w").write(build_lab(analysis, updated))
     open(f"{DOCS}/.nojekyll", "w").write("")  # serve files verbatim
     n_matches = preds["matchId"].nunique()

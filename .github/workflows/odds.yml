@@ -32,8 +32,11 @@ jobs:
       - name: Fetch Sportsbet + Ladbrokes odds
         run: python src/odds.py
 
-      - name: Price markets + compute edges
+      - name: Price stat markets + compute edges
         run: python src/pricing.py price
+
+      - name: Price try-scorer markets
+        run: python src/pricing.py tries
 
       - name: Build site
         run: python src/build_site.py

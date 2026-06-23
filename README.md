@@ -52,12 +52,22 @@ The model is published as a static **GitHub Pages** site, rebuilt automatically.
 | 9. Distribution pricing + value edges | `src/pricing.py price` | `reports/edges.{parquet,json}` |
 | 10. Render site | `src/build_site.py` | `docs/` (Pages root) |
 
-The site has five pages: **Predictions** (per-match player projections + odds), **Value**
-(model-vs-market edges), **Analysis** (Champion Data — defences leaking metres, season leaders,
-position profiles), **Backtest** (out-of-sample accuracy + probability-calibration reliability,
-the trust page), and an interactive **Model Lab** (a live pricing explorer + permutation feature
-importance). Charts are dependency-free SVG (`src/charts.py`); the explorer is vanilla JS
-(`docs/app.js`) mirroring `src/pricing.py`.
+The site has six pages: **Predictions** (per-match player projections + odds), **Value**
+(model-vs-market edges), **Tries** (try-scorer probabilities vs live anytime/2+ prices),
+**Analysis** (Champion Data — defences leaking metres, season leaders, position profiles),
+**Backtest** (out-of-sample accuracy + probability-calibration reliability for both the stat and
+try models — the trust page), and an interactive **Model Lab** (a live pricing explorer +
+permutation feature importance). Charts are dependency-free SVG (`src/charts.py`); the explorer is
+vanilla JS (`docs/app.js`) mirroring `src/pricing.py`.
+
+### Try-scorer model (`src/tryscorer.py`)
+A Poisson model for a player's expected tries, reusing the leakage-safe feature machinery plus
+tries-specific rollups and opponent tries-conceded. From the rate λ it derives the prices books
+offer — P(anytime)=1−e^−λ, P(2+)=1−e^−λ(1+λ), P(3+), E[tries] — then `pricing.py tries` values
+them against the **live** Sportsbet/Ladbrokes try markets (these open early, unlike stat props).
+Out of sample it ranks scorers at AUC ≈ 0.73 with calibration error ≈ 0.008, beating the position
+base-rate and trailing-5 baselines on Brier/log-loss. Implausibly large edges are flagged on the
+Tries page as likely lineup/name mismatches rather than real value.
 
 Two GitHub Actions workflows keep it live:
 - **`.github/workflows/model.yml`** — daily: ingest → features → train (+ calibrate

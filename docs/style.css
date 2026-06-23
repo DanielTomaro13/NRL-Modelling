@@ -30,7 +30,8 @@ td.ch{text-align:left;white-space:normal}
 .edge{display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;border-radius:7px;background:var(--chip);
 font-size:12px;color:var(--mut)}.edge.pos{background:var(--posbg);color:var(--pos)}
 .edge b{color:inherit}.try{display:inline-block;padding:2px 7px;border-radius:7px;background:var(--chip);
-font-size:12px;color:var(--mut)}.try i{color:var(--acc);font-style:normal}
+font-size:12px;color:var(--mut)}.try i{color:var(--acc);font-style:normal}.try.pos{background:var(--posbg);color:var(--pos)}
+td.pos{color:var(--pos)}td.mut{color:var(--mut)}td i{color:var(--acc);font-style:normal;font-size:11px}
 table.value td:first-child{text-align:left}table.value tr.pos td b{color:var(--pos)}
 .prose{max-width:780px}.prose h3{margin:22px 0 6px;font-size:17px}.prose p{color:#c4d2de}
 .prose code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px}

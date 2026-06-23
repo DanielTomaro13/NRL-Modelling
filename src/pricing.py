@@ -216,6 +216,79 @@ def price_snapshot(odds_path="reports/odds_snapshot.parquet",
     return edges
 
 
+# --------------------------------------------------------------------------- try-scorer pricing
+def _try_market(market_raw, line):
+    """Classify a try odds row into anytime / 2+ / 3+ / first (skip first)."""
+    mr = (market_raw or "").lower()
+    if "first" in mr:
+        return "first"
+    if line is not None:
+        if line <= 0.75:
+            return "anytime"
+        if line <= 1.75:
+            return "2+"
+        if line <= 2.75:
+            return "3+"
+    if "anytime" in mr or "1+" in mr:
+        return "anytime"
+    return "anytime"
+
+
+def price_tries(odds_path="reports/odds_snapshot.parquet",
+                pred_path="reports/tryscorer_predictions.parquet",
+                out_parquet="reports/try_edges.parquet", out_json="reports/try_edges.json"):
+    """Value live try-scorer odds against the try model's calibrated probabilities."""
+    try:
+        odds = pd.read_parquet(odds_path)
+        preds = pd.read_parquet(pred_path)
+    except FileNotFoundError as e:
+        print("try pricing skipped:", e)
+        return pd.DataFrame()
+    pb = preds.set_index("playerId")
+    tr = odds[(odds["stat"] == "tries") & odds["single"].notna() & odds["playerId"].notna()]
+    best = {}  # (playerId, market) -> row dict, keep best (highest) price
+    for _, r in tr.iterrows():
+        pid = r["playerId"]
+        if pid not in pb.index:
+            continue
+        mkt = _try_market(r.get("market_raw"), r.get("line"))
+        if mkt in ("first", "3+"):  # we model anytime + 2+ cleanly
+            if mkt == "first":
+                continue
+        prow = pb.loc[pid]
+        if hasattr(prow, "iloc") and getattr(prow, "ndim", 1) > 1:
+            prow = prow.iloc[0]
+        lam = float(prow["lambda"])
+        if mkt == "anytime":
+            p = float(prow["p_anytime"])
+        elif mkt == "2+":
+            p = float(prow["p_2plus"])
+        elif mkt == "3+":
+            p = 1 - math.exp(-lam) * (1 + lam + lam ** 2 / 2)
+        else:
+            continue
+        price = float(r["single"])
+        ev = p * price - 1.0
+        key = (pid, mkt)
+        if key not in best or price > best[key]["price"]:
+            best[key] = {"playerId": pid, "player": prow["name"], "team": prow["team"],
+                         "opp": prow["opp"], "market": mkt, "book": r["book"],
+                         "price": price, "model_p": round(p, 3),
+                         "fair": fair_odds(p), "ev_pct": round(ev * 100, 1),
+                         "event_name": r.get("event_name"), "fetched_at": r.get("fetched_at")}
+    edges = pd.DataFrame(list(best.values()))
+    if not edges.empty:
+        edges = edges.sort_values("ev_pct", ascending=False)
+    edges.to_parquet(out_parquet, index=False)
+    edges.to_json(out_json, orient="records")
+    pos = int((edges["ev_pct"] > 0).sum()) if len(edges) else 0
+    print(f"Wrote {out_parquet}/{out_json}: {len(edges)} try markets priced, {pos} +EV")
+    if len(edges):
+        print(edges[["player", "market", "book", "price", "model_p", "fair", "ev_pct"]]
+              .head(15).to_string(index=False))
+    return edges
+
+
 # --------------------------------------------------------------------------- self test
 def selftest():
     # half-point line: P(over 20.5) with mu=22, sigma=5
@@ -252,5 +325,7 @@ if __name__ == "__main__":
         calibrate_dispersion()
     elif cmd == "price":
         price_snapshot()
+    elif cmd == "tries":
+        price_tries()
     else:
         selftest()
