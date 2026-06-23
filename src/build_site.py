@@ -18,6 +18,7 @@ import sys, os, json, html, datetime as dt
 import pandas as pd
 
 import nrl_meta as M
+import charts as C
 
 DOCS = "docs"
 AEST = dt.timezone(dt.timedelta(hours=10))
@@ -56,10 +57,10 @@ def load_inputs():
     except Exception:
         edges = pd.DataFrame()
     try:
-        acc = pd.read_csv("reports/holdout_summary.csv")
+        analysis = json.load(open("reports/analysis.json"))
     except Exception:
-        acc = pd.DataFrame()
-    return preds, odds, edges, acc
+        analysis = {}
+    return preds, odds, edges, analysis
 
 
 def best_try_price(odds, pid):
@@ -87,9 +88,10 @@ def page(title, body, active, updated):
     nav = "".join(
         f'<a class="{ "on" if k==active else "" }" href="{href}">{label}</a>'
         for k, href, label in [("index", "index.html", "Predictions"),
-                               ("value", "value.html", "Value board"),
-                               ("accuracy", "accuracy.html", "Accuracy"),
-                               ("method", "methodology.html", "Method")])
+                               ("value", "value.html", "Value"),
+                               ("analysis", "analysis.html", "Analysis"),
+                               ("backtest", "backtest.html", "Backtest"),
+                               ("lab", "lab.html", "Model Lab")])
     return f"""<!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{esc(title)}</title><link rel="stylesheet" href="style.css">
@@ -209,52 +211,192 @@ probability is de-vigged from the two-way price. Positive EV = the model thinks 
     return page("Value board", body, "value", updated)
 
 
-def build_accuracy(acc, updated):
-    if acc.empty:
-        body = "<div class='hero'><h1>Accuracy</h1></div><p>Run training to populate.</p>"
-        return page("Accuracy", body, "accuracy", updated)
-    head = "".join(f"<th>{esc(c)}</th>" for c in acc.columns)
-    rows = "".join("<tr>" + "".join(
-        f"<td>{v:.2f}</td>" if isinstance(v, float) else f"<td>{esc(v)}</td>"
-        for v in r) + "</tr>" for r in acc.itertuples(index=False))
-    body = f"""<div class="hero"><h1>Holdout accuracy</h1>
-<p>Mean absolute error on out-of-time season holdouts (2023–25), versus naive baselines
-(trailing-5-game average). The model beats both baselines on every target.</p></div>
-<div class="tablewrap"><table><thead><tr>{head}</tr></thead><tbody>{rows}</tbody></table></div>"""
-    return page("Accuracy", body, "accuracy", updated)
+def _stat_cards(analysis):
+    """Per-target backtest cards: MAE/gain + predicted-vs-actual + residuals."""
+    bt = analysis.get("backtest", {})
+    labels = analysis.get("target_label", {})
+    summ = {r["target"]: r for r in bt.get("summary", [])}
+    cards = []
+    for t in analysis.get("targets", []):
+        s = summ.get(t, {})
+        cal = bt.get("calibration", {}).get(t, {})
+        res = bt.get("residuals", {}).get(t, {})
+        cal_pts = list(zip(cal.get("pred", []), cal.get("actual", [])))
+        lo = min([p for p, a in cal_pts] + [a for p, a in cal_pts] + [0]) if cal_pts else 0
+        hi = max([p for p, a in cal_pts] + [a for p, a in cal_pts] + [1]) if cal_pts else 1
+        cal_svg = C.line_chart([{"name": "model", "color": C.ACC, "points": cal_pts}],
+                               (lo, hi), (lo, hi), width=300, height=210, diagonal=True,
+                               x_label="predicted", y_label="actual", dots=True) if cal_pts else ""
+        hist_svg = C.histogram(res.get("edges", [0, 1]), res.get("counts", [0]),
+                               color=C.POS, width=300, height=170,
+                               x_label="error (actual − predicted)",
+                               mean=res.get("mean")) if res else ""
+        cards.append(f"""<div class="bcard">
+<h4>{esc(labels.get(t, t))}</h4>
+<div class="kpis"><span class="kpi"><b>{s.get('MAE_model','–')}</b><i>model MAE</i></span>
+<span class="kpi"><b>{s.get('MAE_base_r5','–')}</b><i>baseline MAE</i></span>
+<span class="kpi pos"><b>{('+%.1f%%'%s['gain_pct']) if s.get('gain_pct') is not None else '–'}</b><i>better</i></span></div>
+<div class="duo"><figure>{cal_svg}<figcaption>Predicted vs actual — points on the dashed line = unbiased.</figcaption></figure>
+<figure>{hist_svg}<figcaption>Error spread (σ = {res.get('sd','–')}), centred near zero.</figcaption></figure></div>
+</div>""")
+    return "".join(cards)
 
 
-def build_method(updated):
-    body = """<div class="hero"><h1>How it works</h1></div>
-<section class="prose">
-<h3>1. The model</h3>
-<p>For each of six targets — hit-ups, runs, run metres, post-contact metres, tackles and
-performance points — a separate <code>HistGradientBoostingRegressor</code> is trained on
-Champion Data men's NRL match feeds (2021–present; earlier seasons seed each player's rolling
-history). Count targets use Poisson loss. Every feature is shifted one game so nothing from the
-match being predicted leaks in: rolling player form (3/5/10-game and career), own-team form, and
-opponent <em>defence</em> conceded, joined as-of kickoff. Performance points =
-<code>4·points + 10·tryAssists + 5·lineBreaks + 1·tackles + ⌊runMetres/10⌋</code>.</p>
+def build_backtest(analysis, updated):
+    bt = analysis.get("backtest", {})
+    if not bt:
+        return page("Backtest", "<div class='hero'><h1>Backtest</h1></div>"
+                    "<p>Run <code>python src/analysis.py</code> to populate.</p>", "backtest", updated)
+    pooled = bt.get("reliability_pooled", {})
+    rel_pts = list(zip(pooled.get("pred", []), pooled.get("emp", [])))
+    rel_svg = C.line_chart([{"name": "model", "color": C.ACC, "points": rel_pts}],
+                           (0, 1), (0, 1), width=520, height=360, diagonal=True,
+                           x_label="model probability the player goes OVER",
+                           y_label="how often they actually did") if rel_pts else ""
+    cal_err = bt.get("calibration_error")
+    # accuracy table
+    rows = "".join(
+        f'<tr><td class="pl">{esc(r["label"])}</td><td>{r["MAE_model"]}</td>'
+        f'<td>{r["MAE_base_r5"]}</td><td class="pos">+{r["gain_pct"]}%</td></tr>'
+        for r in bt.get("summary", []))
+    holdouts = ", ".join(str(h) for h in bt.get("holdouts", []))
+    body = f"""<div class="hero"><h1>Does it actually work?</h1>
+<p>Everything here is measured on seasons the model never saw in training ({holdouts}) —
+{bt.get('n_test',0):,} player-matches. No cherry-picking: these are out-of-sample results.</p></div>
 
-<h3>2. From a prediction to a price</h3>
-<p>The model predicts the <em>mean</em> of each stat; a bookmaker prices the whole
-<em>distribution</em>. We turn each prediction into a calibrated <code>Normal(mean, σ)</code>,
-where σ grows with the mean (<code>σ = α + β·mean</code>, fitted from out-of-time residuals).
-Any posted line is then priced off the normal CDF, using the standard integer-line push band
-(±0.5) and quarter-line 50/50 split. That yields a fair price for over and under.</p>
+<section class="panel">
+<h3>Probability calibration <span class="tag">the one that matters for betting</span></h3>
+<div class="split"><div>{rel_svg}</div>
+<div class="note"><p>When the model says a player has a <b>given chance</b> of going over a line,
+does it happen that often in reality? The dots track the diagonal almost perfectly — when the
+model says 70%, it lands ~70% of the time.</p>
+<p class="big">{cal_err:.3f}</p><p class="sub">mean gap between predicted and actual probability
+(0 = perfect). This is what makes the value/EV numbers trustworthy rather than wishful.</p></div></div>
+</section>
 
-<h3>3. Finding value</h3>
-<p>The bookmaker's two-way price is <strong>de-vigged</strong> (margin removed) to a market-implied
-probability. We compare it to the model probability and compute expected value per dollar,
-treating a push as a returned stake. A positive EV means the model thinks the offered price is
-too long. Odds are pulled from the Sportsbet and Ladbrokes public APIs and refreshed every six
-hours; player tackle / run-metre / fantasy lines typically open one to two days before kickoff.</p>
+<section class="panel">
+<h3>Accuracy vs the naive baseline</h3>
+<p class="lead">Mean absolute error per prediction, against the standard punter heuristic
+(a player's trailing-5-game average). Lower is better; the model wins on every stat.</p>
+<div class="tablewrap"><table><thead><tr><th class="pl">Stat</th><th>Model MAE</th>
+<th>Trailing-5 MAE</th><th>Improvement</th></tr></thead><tbody>{rows}</tbody></table></div>
+</section>
 
-<h3>4. Lineups</h3>
-<p>Predictions use the confirmed NRL team lists (named 1–17) scraped from nrl.com, falling back
-to each squad's most-recent line-up if the official list is not yet published.</p>
-</section>"""
-    return page("Methodology", body, "method", updated)
+<section class="panel"><h3>Per-stat detail</h3>
+<div class="grid2">{_stat_cards(analysis)}</div></section>
+
+<p class="disclaim">Honest caveat: we don't have a historical archive of bookmaker prices, so this
+is a forecast-accuracy and probability-calibration backtest — not a profit/ROI claim. It shows the
+projections and their implied probabilities are sound; whether a given price is value still depends
+on the live market.</p>"""
+    return page("Backtest & accuracy", body, "backtest", updated)
+
+
+def build_analysis(analysis, updated):
+    ci = analysis.get("champion", {})
+    if not ci:
+        return page("Analysis", "<div class='hero'><h1>Analysis</h1></div>"
+                    "<p>Run <code>python src/analysis.py</code> to populate.</p>", "analysis", updated)
+    season = ci.get("season")
+    # weakest defences (run metres conceded)
+    td = ci.get("team_defence", [])[:16]
+    def_svg = C.hbars([(d["team"], d["runMetres_conceded"]) for d in td],
+                      color=C.WARN, value_fmt="{:.0f}", width=560, label_w=190, unit=" m")
+    # leaders
+    def leader_block(key, title, unit=""):
+        items = ci.get("leaders", {}).get(key, [])[:12]
+        svg = C.hbars([(f'{l["name"]}', l["avg"]) for l in items],
+                      color=C.ACC, value_fmt="{:.1f}", width=540, label_w=150, unit=unit)
+        return f'<div class="lcard"><h4>{title}</h4>{svg}</div>'
+    # position profiles table
+    prof = ci.get("position_profiles", [])
+    phead = "".join(f"<th>{lbl}</th>" for _, lbl in STAT_COLS)
+    prows = "".join(
+        "<tr><td class='pl'>" + esc(p["position"]) + f"</td>" +
+        "".join(f"<td>{p.get(c,0):.0f}</td>" if c != 'runsHitup' else f"<td>{p.get(c,0):.1f}</td>"
+                for c, _ in STAT_COLS) + "</tr>" for p in prof)
+    body = f"""<div class="hero"><h1>Champion Data, {season}</h1>
+<p>What the underlying match data says this season — {ci.get('n_players',0)} players across
+{ci.get('n_matches',0)} matches. Useful context before you back a line: who's racking up the
+volume, and which defences are leaking it.</p></div>
+
+<section class="panel"><h3>Which defences leak metres? <span class="tag">attack-side value</span></h3>
+<p class="lead">Run metres conceded per game (all opponents). Players facing the teams at the top
+have the friendliest match-ups for run-metre and post-contact overs.</p>{def_svg}</section>
+
+<section class="panel"><h3>Season leaders (per-game average, min 4 games)</h3>
+<div class="grid2">
+{leader_block('tackles','Most tackles')}
+{leader_block('runMetres','Most run metres',' m')}
+{leader_block('perf_points','Most performance points')}
+{leader_block('postContactMetres','Most post-contact metres',' m')}
+</div></section>
+
+<section class="panel"><h3>Average output by position</h3>
+<p class="lead">Roles shape the stat line — props pile up run metres and post-contact, locks and
+hookers tackle, halves drive performance points. The model conditions on position throughout.</p>
+<div class="tablewrap"><table><thead><tr><th class="pl">Position</th>{phead}</tr></thead>
+<tbody>{prows}</tbody></table></div></section>"""
+    return page(f"Analysis — {season}", body, "analysis", updated)
+
+
+def build_lab(analysis, updated):
+    imp = analysis.get("importance", {})
+    labels = analysis.get("target_label", {})
+    imp_cards = []
+    for t in analysis.get("targets", []):
+        items = imp.get(t, [])[:8]
+        if not items:
+            continue
+        svg = C.hbars([(i["feature"], i["importance"]) for i in items],
+                      color=C.ACC, value_fmt="{:.2f}", width=520, label_w=210)
+        imp_cards.append(f'<div class="lcard"><h4>{esc(labels.get(t,t))}</h4>{svg}</div>')
+    imp_html = "".join(imp_cards)
+    body = f"""<div class="hero"><h1>Model Lab</h1>
+<p>Play with the exact maths the site uses to turn a projection into a price and an edge.
+Change the numbers and watch the probability, fair odds and expected value update live.</p></div>
+
+<section class="panel"><h3>Pricing explorer <span class="tag">interactive</span></h3>
+<p class="lead">Pick a stat, set the model's projected mean and a bookmaker line, then enter the
+over/under price a book is offering. The tool builds the calibrated <code>Normal(mean, σ)</code>,
+reads the probability off the curve (with the integer-line push band), de-vigs the market and
+computes your edge — the same pipeline that fills the value board.</p>
+<div id="lab" class="lab">
+  <div class="controls">
+    <label>Stat
+      <select id="lab-stat"></select></label>
+    <label>Model projected mean <output id="lab-mean-v"></output>
+      <input id="lab-mean" type="range" min="0" max="60" step="0.5"></label>
+    <label>Bookmaker line <output id="lab-line-v"></output>
+      <input id="lab-line" type="range" min="0" max="60" step="0.5"></label>
+    <div class="prices"><label>Over price <input id="lab-over" type="number" step="0.01" value="1.90"></label>
+    <label>Under price <input id="lab-under" type="number" step="0.01" value="1.90"></label></div>
+  </div>
+  <div class="readout"><div id="lab-curve"></div><div id="lab-out" class="out"></div></div>
+</div></section>
+
+<section class="panel"><h3>What drives each prediction?</h3>
+<p class="lead">Permutation importance on held-out data — how much each input matters to each stat.
+Recent form and role dominate; opponent-defence features add the match-up signal.</p>
+<div class="grid2">{imp_html}</div></section>
+
+<section class="prose panel">
+<h3>The method, in four steps</h3>
+<p><b>1. Predict the mean.</b> A separate gradient-boosting model per stat, trained on Champion Data
+feeds with strictly pre-match features (rolling form shifted one game, opponent defence conceded,
+team context). Counts use Poisson loss.</p>
+<p><b>2. Build a distribution.</b> The prediction is the mean; σ is calibrated from out-of-sample
+residuals as <code>σ = α + β·mean</code> (spread grows with volume). That gives a full
+<code>Normal(mean, σ)</code>, not just a point.</p>
+<p><b>3. Price the line.</b> Probability of going over = the normal tail above the line, with a
+±0.5 push band on whole-number lines and a 50/50 split on quarter lines — standard book convention.</p>
+<p><b>4. Find the edge.</b> De-vig the book's two prices to a market probability, compare to the
+model, and compute EV per dollar (a push returns the stake). Positive EV = the price looks too long.</p>
+<p class="disclaim">Informational only — not betting advice. See the
+<a href="backtest.html">backtest</a> for how calibrated these probabilities actually are.</p>
+</section>
+<script src="app.js"></script>"""
+    return page("Model Lab", body, "lab", updated)
 
 
 CSS = """:root{--bg:#0b0e14;--card:#141a24;--line:#222c3a;--ink:#e6edf3;--mut:#8aa0b2;
@@ -295,23 +437,151 @@ table.value td:first-child{text-align:left}table.value tr.pos td b{color:var(--p
 .prose code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px}
 footer{border-top:1px solid var(--line);margin-top:40px;padding:22px 0;color:var(--mut);font-size:12.5px}
 footer p{margin:5px 0}footer .rg{color:#b58}footer a{color:var(--acc)}
+/* analysis / backtest / lab */
+.panel{margin:20px 0;padding:18px 18px 22px;border:1px solid var(--line);border-radius:14px;background:var(--card)}
+.panel h3{margin:0 0 4px;font-size:17px;display:flex;align-items:center;gap:10px}
+.panel .lead{color:var(--mut);margin:.3em 0 14px;max-width:760px}
+.tag{font-size:11px;font-weight:600;color:var(--acc);background:#10243150;border:1px solid #1d3a4a;
+padding:2px 8px;border-radius:20px;text-transform:uppercase;letter-spacing:.04em}
+.chart{width:100%;height:auto;display:block}
+.split{display:grid;grid-template-columns:1.1fr .9fr;gap:20px;align-items:center}
+.split .note p{color:#c4d2de}.note .big{font-size:40px;font-weight:700;color:var(--pos);margin:6px 0 0}
+.note .sub{color:var(--mut);font-size:13px;margin:.2em 0 0}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.bcard,.lcard{border:1px solid var(--line);border-radius:12px;padding:13px 14px;background:#0f141c}
+.bcard h4,.lcard h4{margin:0 0 8px;font-size:14.5px}
+.kpis{display:flex;gap:16px;margin-bottom:8px}.kpi{display:flex;flex-direction:column}
+.kpi b{font-size:18px}.kpi i{color:var(--mut);font-size:11px;font-style:normal}.kpi.pos b{color:var(--pos)}
+.duo{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+figure{margin:0}figcaption{color:var(--mut);font-size:11px;margin-top:2px}
+.disclaim{color:var(--mut);font-size:12.5px;border-left:3px solid var(--line);padding:2px 0 2px 12px;margin:18px 0}
+.lab{display:grid;grid-template-columns:300px 1fr;gap:20px;align-items:start}
+.controls label{display:block;color:var(--mut);font-size:13px;margin:0 0 14px}
+.controls input[type=range]{width:100%;margin-top:6px;accent-color:var(--acc)}
+.controls output{color:var(--ink);font-weight:600;float:right}
+.controls select,.controls input[type=number]{width:100%;margin-top:5px;background:#0f141c;color:var(--ink);
+border:1px solid var(--line);border-radius:8px;padding:7px 9px;font-size:14px}
+.prices{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.readout .out{margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.ostat{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:#0f141c}
+.ostat b{display:block;font-size:21px}.ostat span{color:var(--mut);font-size:11.5px}
+.ostat.win b{color:var(--pos)}.ostat.lose b{color:#e0605f}
+.verdict{grid-column:1/-1;border-radius:10px;padding:11px 14px;font-weight:600}
+.verdict.win{background:var(--posbg);color:var(--pos);border:1px solid #1c6b4a}
+.verdict.lose{background:#2a1414;color:#e0958f;border:1px solid #5a2b2b}
+.prose.panel{max-width:none}.prose.panel p{color:#c4d2de;margin:.5em 0}
+@media(max-width:760px){.split,.grid2,.duo,.lab{grid-template-columns:1fr}}
 @media(max-width:640px){.hero h1{font-size:22px}nav a{padding:6px 8px}}
+"""
+
+# ---------------------------------------------------------------- interactive Model Lab JS
+APP_JS = r"""// Pricing explorer — mirrors src/pricing.py (Normal CDF, push band, quarter-line, de-vig, EV).
+function erf(x){var s=x<0?-1:1;x=Math.abs(x);var t=1/(1+0.3275911*x);
+var y=1-(((((1.061405429*t-1.453152027)*t)+1.421413741)*t-0.284496736)*t+0.254829592)*t*Math.exp(-x*x);
+return s*y;}
+function cdf(x,m,sd){return 0.5*(1+erf((x-m)/(sd*Math.SQRT2)));}
+function frac(x){return x-Math.floor(x);}
+function overUnder(mu,sd,line){sd=Math.max(sd,1e-6);var f=Math.round(frac(line)*10000)/10000;
+ if(f===0.25||f===0.75){var a=overUnder(mu,sd,line-0.25),b=overUnder(mu,sd,line+0.25);
+   return[(a[0]+b[0])/2,(a[1]+b[1])/2,(a[2]+b[2])/2];}
+ if(Math.abs(f-0.5)<1e-6){var pu=cdf(line,mu,sd);return[1-pu,pu,0];}
+ var lo=cdf(line-0.5,mu,sd),hi=cdf(line+0.5,mu,sd);return[1-hi,lo,hi-lo];}
+function devig(o,u){if(!o||!u)return[null,null];var io=1/o,iu=1/u,s=io+iu;return[io/s,iu/s];}
+function fmtOdds(p){return p>1e-9?(1/p).toFixed(2):'–';}
+
+var MODEL=null;
+fetch('data/model.json').then(r=>r.json()).then(d=>{MODEL=d;initLab();}).catch(()=>{});
+
+function sigmaFor(t,mu){var d=MODEL.dispersion[t];return Math.max(d.alpha+d.beta*mu,d.sigma_floor);}
+
+function initLab(){
+ var sel=document.getElementById('lab-stat');if(!sel)return;
+ var ts=Object.keys(MODEL.dispersion);
+ ts.forEach(function(t){var o=document.createElement('option');o.value=t;
+   o.textContent=MODEL.target_label[t]||t;sel.appendChild(o);});
+ sel.value=ts.indexOf('tackles')>=0?'tackles':ts[0];
+ ['lab-stat','lab-mean','lab-line','lab-over','lab-under'].forEach(function(id){
+   document.getElementById(id).addEventListener('input',function(e){if(id==='lab-stat')presetFor(sel.value);render();});});
+ presetFor(sel.value);render();
+}
+function presetFor(t){
+ var mean=MODEL.typical_mean[t]||10, max=Math.max(8,Math.ceil(mean*2.2));
+ var mu=document.getElementById('lab-mean'),li=document.getElementById('lab-line');
+ mu.max=max;li.max=max;mu.value=mean;li.value=Math.max(0,Math.round((mean-1.5)*2)/2);
+}
+function render(){
+ var t=document.getElementById('lab-stat').value;
+ var mu=parseFloat(document.getElementById('lab-mean').value);
+ var line=parseFloat(document.getElementById('lab-line').value);
+ var over=parseFloat(document.getElementById('lab-over').value)||null;
+ var under=parseFloat(document.getElementById('lab-under').value)||null;
+ var sd=sigmaFor(t,mu);
+ document.getElementById('lab-mean-v').textContent=mu.toFixed(1);
+ document.getElementById('lab-line-v').textContent=line.toFixed(1);
+ var pr=overUnder(mu,sd,line),pOver=pr[0],pUnder=pr[1],push=pr[2];
+ var mk=devig(over,under),mOver=mk[0];
+ var evOver=over?(pOver*over+push-1):null, evUnder=under?(pUnder*under+push-1):null;
+ var best=(evOver||-9)>=(evUnder||-9)?['OVER',evOver,pOver,over]:['UNDER',evUnder,pUnder,under];
+ drawCurve(mu,sd,line);
+ var out=document.getElementById('lab-out');
+ function stat(cls,v,l){return '<div class="ostat '+cls+'"><b>'+v+'</b><span>'+l+'</span></div>';}
+ var edge=(mOver!=null)?((pOver-mOver)*100):null;
+ var verdict;
+ if(best[1]==null){verdict='<div class="verdict lose">Enter a book price to see edge & EV.</div>';}
+ else if(best[1]>0.001){verdict='<div class="verdict win">Model sees value on the '+best[0]+
+   ' @ '+best[3].toFixed(2)+' — '+(best[1]*100).toFixed(1)+'% EV.</div>';}
+ else{verdict='<div class="verdict lose">No edge at these prices ('+best[0]+' EV '+
+   (best[1]*100).toFixed(1)+'%).</div>';}
+ out.innerHTML=
+   stat('', (pOver*100).toFixed(1)+'%','model P(over '+line+')')+
+   stat('', fmtOdds(pOver),'fair over odds')+
+   stat('', (mOver!=null?(mOver*100).toFixed(1)+'%':'–'),'market P(over), de-vigged')+
+   stat('', (push>0.001?(push*100).toFixed(1)+'%':'0%'),'push chance')+
+   stat(best[0]==='OVER'?'win':'', (evOver!=null?(evOver*100).toFixed(1)+'%':'–'),'EV backing over')+
+   stat(best[0]==='UNDER'?'win':'', (evUnder!=null?(evUnder*100).toFixed(1)+'%':'–'),'EV backing under')+
+   verdict;
+}
+function drawCurve(mu,sd,line){
+ var W=520,H=240,ml=8,mr=8,mt=10,mb=22,pw=W-ml-mr,ph=H-mt-mb;
+ var x0=mu-3.5*sd,x1=mu+3.5*sd;
+ var sx=function(x){return ml+(x-x0)/(x1-x0)*pw;};
+ var pdf=function(x){return Math.exp(-0.5*Math.pow((x-mu)/sd,2));};
+ var top=pdf(mu),sy=function(v){return mt+(1-v/top)*ph;};
+ var N=120,pts=[],fill=[];
+ for(var i=0;i<=N;i++){var x=x0+(x1-x0)*i/N;pts.push([sx(x),sy(pdf(x))]);}
+ for(var j=0;j<=N;j++){var x=Math.max(line,x0)+(x1-Math.max(line,x0))*j/N;fill.push([sx(x),sy(pdf(x))]);}
+ var path='M'+pts.map(p=>p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' L');
+ var area='M'+sx(Math.max(line,x0)).toFixed(1)+' '+(mt+ph)+' L'+
+   fill.map(p=>p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' L')+' L'+sx(x1).toFixed(1)+' '+(mt+ph)+' Z';
+ var lx=sx(line);
+ var svg='<svg viewBox="0 0 '+W+' '+H+'" class="chart">'+
+  '<path d="'+area+'" fill="#39d98a" opacity="0.18"/>'+
+  '<path d="'+path+'" fill="none" stroke="#4cc2ff" stroke-width="2"/>'+
+  '<line x1="'+lx.toFixed(1)+'" y1="'+mt+'" x2="'+lx.toFixed(1)+'" y2="'+(mt+ph)+'" stroke="#f0a35e" stroke-width="1.5" stroke-dasharray="4 3"/>'+
+  '<text x="'+lx.toFixed(1)+'" y="'+(mt+ph+15)+'" text-anchor="middle" fill="#f0a35e" font-size="11">line '+line.toFixed(1)+'</text>'+
+  '<text x="'+sx(mu).toFixed(1)+'" y="'+(mt+12)+'" text-anchor="middle" fill="#8aa0b2" font-size="11">model '+mu.toFixed(1)+'</text>'+
+  '<text x="'+(ml+pw-4)+'" y="'+(mt+ph-6)+'" text-anchor="end" fill="#39d98a" font-size="11">over →</text></svg>';
+ document.getElementById('lab-curve').innerHTML=svg;
+}
 """
 
 
 def main():
     rnd = int(sys.argv[1]) if len(sys.argv) > 1 else None
-    preds, odds, edges, acc = load_inputs()
+    preds, odds, edges, analysis = load_inputs()
     if rnd is None:
         rnd = int(preds["roundNumber"].iloc[0]) if "roundNumber" in preds else 0
     updated = now_aest().strftime("%a %d %b %Y, %I:%M%p AEST")
 
     os.makedirs(DOCS, exist_ok=True)
+    os.makedirs(f"{DOCS}/data", exist_ok=True)
     open(f"{DOCS}/style.css", "w").write(CSS)
+    open(f"{DOCS}/app.js", "w").write(APP_JS)
     open(f"{DOCS}/index.html", "w").write(build_index(preds, odds, edges, rnd, updated))
     open(f"{DOCS}/value.html", "w").write(build_value(edges, updated))
-    open(f"{DOCS}/accuracy.html", "w").write(build_accuracy(acc, updated))
-    open(f"{DOCS}/methodology.html", "w").write(build_method(updated))
+    open(f"{DOCS}/analysis.html", "w").write(build_analysis(analysis, updated))
+    open(f"{DOCS}/backtest.html", "w").write(build_backtest(analysis, updated))
+    open(f"{DOCS}/lab.html", "w").write(build_lab(analysis, updated))
     open(f"{DOCS}/.nojekyll", "w").write("")  # serve files verbatim
     n_matches = preds["matchId"].nunique()
     print(f"Built {DOCS}/ — round {rnd}, {n_matches} matches, "

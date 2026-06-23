@@ -36,4 +36,38 @@ table.value td:first-child{text-align:left}table.value tr.pos td b{color:var(--p
 .prose code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px}
 footer{border-top:1px solid var(--line);margin-top:40px;padding:22px 0;color:var(--mut);font-size:12.5px}
 footer p{margin:5px 0}footer .rg{color:#b58}footer a{color:var(--acc)}
+/* analysis / backtest / lab */
+.panel{margin:20px 0;padding:18px 18px 22px;border:1px solid var(--line);border-radius:14px;background:var(--card)}
+.panel h3{margin:0 0 4px;font-size:17px;display:flex;align-items:center;gap:10px}
+.panel .lead{color:var(--mut);margin:.3em 0 14px;max-width:760px}
+.tag{font-size:11px;font-weight:600;color:var(--acc);background:#10243150;border:1px solid #1d3a4a;
+padding:2px 8px;border-radius:20px;text-transform:uppercase;letter-spacing:.04em}
+.chart{width:100%;height:auto;display:block}
+.split{display:grid;grid-template-columns:1.1fr .9fr;gap:20px;align-items:center}
+.split .note p{color:#c4d2de}.note .big{font-size:40px;font-weight:700;color:var(--pos);margin:6px 0 0}
+.note .sub{color:var(--mut);font-size:13px;margin:.2em 0 0}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.bcard,.lcard{border:1px solid var(--line);border-radius:12px;padding:13px 14px;background:#0f141c}
+.bcard h4,.lcard h4{margin:0 0 8px;font-size:14.5px}
+.kpis{display:flex;gap:16px;margin-bottom:8px}.kpi{display:flex;flex-direction:column}
+.kpi b{font-size:18px}.kpi i{color:var(--mut);font-size:11px;font-style:normal}.kpi.pos b{color:var(--pos)}
+.duo{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+figure{margin:0}figcaption{color:var(--mut);font-size:11px;margin-top:2px}
+.disclaim{color:var(--mut);font-size:12.5px;border-left:3px solid var(--line);padding:2px 0 2px 12px;margin:18px 0}
+.lab{display:grid;grid-template-columns:300px 1fr;gap:20px;align-items:start}
+.controls label{display:block;color:var(--mut);font-size:13px;margin:0 0 14px}
+.controls input[type=range]{width:100%;margin-top:6px;accent-color:var(--acc)}
+.controls output{color:var(--ink);font-weight:600;float:right}
+.controls select,.controls input[type=number]{width:100%;margin-top:5px;background:#0f141c;color:var(--ink);
+border:1px solid var(--line);border-radius:8px;padding:7px 9px;font-size:14px}
+.prices{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.readout .out{margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.ostat{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:#0f141c}
+.ostat b{display:block;font-size:21px}.ostat span{color:var(--mut);font-size:11.5px}
+.ostat.win b{color:var(--pos)}.ostat.lose b{color:#e0605f}
+.verdict{grid-column:1/-1;border-radius:10px;padding:11px 14px;font-weight:600}
+.verdict.win{background:var(--posbg);color:var(--pos);border:1px solid #1c6b4a}
+.verdict.lose{background:#2a1414;color:#e0958f;border:1px solid #5a2b2b}
+.prose.panel{max-width:none}.prose.panel p{color:#c4d2de;margin:.5em 0}
+@media(max-width:760px){.split,.grid2,.duo,.lab{grid-template-columns:1fr}}
 @media(max-width:640px){.hero h1{font-size:22px}nav a{padding:6px 8px}}

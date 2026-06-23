@@ -47,9 +47,17 @@ The model is published as a static **GitHub Pages** site, rebuilt automatically.
 | Step | Script | Output |
 |---|---|---|
 | 6. Detect comp/round + scrape lineups + predict | `src/run_round.py` | `reports/round_predictions.parquet` |
-| 7. Fetch odds (Sportsbet + Ladbrokes) | `src/odds.py` | `reports/odds_snapshot.{parquet,json}` |
-| 8. Distribution pricing + value edges | `src/pricing.py price` | `reports/edges.{parquet,json}` |
-| 9. Render site | `src/build_site.py` | `docs/` (Pages root) |
+| 7. Analysis + backtest + feature importance | `src/analysis.py` | `reports/analysis.json`, `docs/data/model.json` |
+| 8. Fetch odds (Sportsbet + Ladbrokes) | `src/odds.py` | `reports/odds_snapshot.{parquet,json}` |
+| 9. Distribution pricing + value edges | `src/pricing.py price` | `reports/edges.{parquet,json}` |
+| 10. Render site | `src/build_site.py` | `docs/` (Pages root) |
+
+The site has five pages: **Predictions** (per-match player projections + odds), **Value**
+(model-vs-market edges), **Analysis** (Champion Data — defences leaking metres, season leaders,
+position profiles), **Backtest** (out-of-sample accuracy + probability-calibration reliability,
+the trust page), and an interactive **Model Lab** (a live pricing explorer + permutation feature
+importance). Charts are dependency-free SVG (`src/charts.py`); the explorer is vanilla JS
+(`docs/app.js`) mirroring `src/pricing.py`.
 
 Two GitHub Actions workflows keep it live:
 - **`.github/workflows/model.yml`** — daily: ingest → features → train (+ calibrate
