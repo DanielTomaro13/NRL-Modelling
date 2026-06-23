@@ -88,18 +88,52 @@ def load_inputs():
     return preds, odds, edges, analysis, tries, try_edges, tryinfo, sc
 
 
+BOOKS = [("sportsbet", "SBT"), ("ladbrokes", "LAD"), ("dabble", "DAB")]
+
+
 def best_try_price(odds, pid):
-    """Best (shortest) anytime/1+ try price across books for a player."""
-    if odds.empty or "playerId" not in odds:
+    """Best (shortest) anytime try price across books for a player."""
+    bb = anytime_by_book(odds, pid)
+    if not bb:
         return None
-    sub = odds[(odds.get("playerId") == pid) & (odds.get("stat") == "tries")
-               & (odds.get("single").notna())]
-    # 1+ / anytime only (line ~0.5)
-    sub = sub[sub["line"].fillna(0.5) <= 0.5]
-    if sub.empty:
-        return None
-    row = sub.loc[sub["single"].idxmin()]
-    return {"price": float(row["single"]), "book": row["book"]}
+    book, price = min(bb.items(), key=lambda kv: kv[1])
+    return {"price": price, "book": book}
+
+
+def anytime_by_book(odds, pid):
+    """{book: price} for a player's anytime try market across books."""
+    if odds.empty or "playerId" not in odds or "kind" not in odds:
+        return {}
+    sub = odds[(odds["playerId"] == pid) & (odds["stat"] == "tries")
+               & (odds["kind"] == "anytime") & (odds["single"].notna())]
+    out = {}
+    for _, r in sub.iterrows():
+        b = r["book"]
+        p = float(r["single"])
+        if b not in out or p > out[b]:   # keep best (longest) price per book
+            out[b] = p
+    return out
+
+
+def book_cells(by_book, model_p):
+    """Render one <td> per book with its price; best (highest) highlighted; + an EV note."""
+    if by_book:
+        best_price = max(by_book.values())
+    cells = []
+    for key, _lbl in BOOKS:
+        if key in by_book:
+            p = by_book[key]
+            cls = "pos" if (by_book and p == best_price) else "mut"
+            cells.append(f'<td class="{cls}">{p:.2f}</td>')
+        else:
+            cells.append('<td class="mut">–</td>')
+    ev = ""
+    if by_book and model_p:
+        e = model_p * max(by_book.values()) - 1
+        ev = f'<td class="{"pos" if e>0 else ""}">{e*100:+.0f}%</td>'
+    else:
+        ev = '<td>–</td>'
+    return "".join(cells) + ev
 
 
 def edges_for_pid(edges, pid):
@@ -442,35 +476,24 @@ def fmt_odds_cell(p):
     return f"${1/p:.2f}" if p and p > 1e-9 else "–"
 
 
-def _try_section(tries, try_edges):
-    ev_by_pid = {}
-    if not try_edges.empty:
-        for _, e in try_edges[try_edges.market == "anytime"].iterrows():
-            ev_by_pid[e["playerId"]] = e
+def _try_section(tries, odds):
+    book_head = "".join(f"<th>{lbl}</th>" for _, lbl in BOOKS)
     secs = []
     for mid, g in tries.groupby("matchId"):
         g = g.sort_values("p_anytime", ascending=False)
         teams = f'{g.iloc[0]["team"]} vs {g.iloc[0]["opp"]}'
         rows = []
         for _, p in g.head(7).iterrows():
-            e = ev_by_pid.get(p["playerId"])
-            if e is not None and e["ev_pct"] is not None:
-                ev = e["ev_pct"]; credible = 0 < ev <= 40
-                cls = "pos" if credible else ""
-                price = f'{e["price"]:.2f} <i>{esc(e["book"])[:3]}</i>'
-                evtxt = (f'<b>{ev:+.0f}%</b>' if credible else
-                         f'<span title="implausible — likely a lineup/name mismatch">{ev:+.0f}%?</span>')
-                odds_cell = f'<td class="{cls}">${price}</td><td class="{cls}">{evtxt}</td>'
-            else:
-                odds_cell = '<td>–</td><td>–</td>'
+            by_book = anytime_by_book(odds, p["playerId"])
             rows.append(
                 f'<tr><td class="pl"><b>{esc(p["name"])}</b><span class="pos">{esc(p["position"])}</span>'
                 f'<span class="tm">{esc(p["team"])}</span></td>'
-                f'<td><b>{p["p_anytime"]*100:.0f}%</b></td><td>{p["p_2plus"]*100:.0f}%</td>'
-                f'<td class="mut">{fmt_odds_cell(p["p_anytime"])}</td>{odds_cell}</tr>')
+                f'<td><b>{p["p_anytime"]*100:.0f}%</b></td>'
+                f'<td class="mut">{fmt_odds_cell(p["p_anytime"])}</td>'
+                f'{book_cells(by_book, float(p["p_anytime"]))}</tr>')
         secs.append(f"""<section class="match"><h3>{esc(teams)}</h3>
-<div class="tablewrap"><table><thead><tr><th class="pl">Player</th><th>Anytime</th><th>2+</th>
-<th>Fair</th><th>Best price</th><th>EV</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div></section>""")
+<div class="tablewrap"><table><thead><tr><th class="pl">Player</th><th>Anytime</th>
+<th>Fair</th>{book_head}<th>Best EV</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div></section>""")
     return "".join(secs)
 
 
@@ -509,7 +532,7 @@ def _points_section(ppoints, points_edges):
     return "".join(secs)
 
 
-def build_scoring(tries, try_edges, tryinfo, sc, updated):
+def build_scoring(tries, try_edges, tryinfo, sc, odds, updated):
     ppoints = sc.get("ppoints", pd.DataFrame())
     points_edges = sc.get("points_edges", pd.DataFrame())
     if tries.empty and ppoints.empty:
@@ -529,11 +552,12 @@ calibrated they are{f' (try model ranks at AUC {auc})' if auc else ''}.</p></div
 book has posted a player-points line, the model's edge is shown.</p></section>
 {_points_section(ppoints, points_edges)}
 
-<div class="hero" style="padding-top:8px"><h2 style="margin:0;font-size:20px">Try scorers</h2></div>
-{f'<div class="banner pos">{n_try_val} anytime markets show model value (0–40% EV).</div>' if n_try_val else ''}
-<p class="disclaim">Big EV numbers (flagged “?”) almost always mean a team-list or name mismatch,
-not real value — trust the credible low edges and check the lineup.</p>
-{_try_section(tries, try_edges)}"""
+<div class="hero" style="padding-top:8px"><h2 style="margin:0;font-size:20px">Try scorers</h2>
+<p>Model anytime-try probability and fair price, next to every book's live price
+(best highlighted). Best EV = model edge at the best available price.</p></div>
+<p class="disclaim">Very large EV usually means a team-list or name mismatch, not real value —
+trust the credible low edges and check the lineup.</p>
+{_try_section(tries, odds)}"""
     return page("Scoring & points", body, "scoring", updated)
 
 
@@ -777,7 +801,7 @@ def main():
     open(f"{DOCS}/app.js", "w").write(APP_JS)
     open(f"{DOCS}/index.html", "w").write(build_index(preds, odds, edges, rnd, updated))
     open(f"{DOCS}/value.html", "w").write(build_value(edges, updated))
-    open(f"{DOCS}/scoring.html", "w").write(build_scoring(tries, try_edges, tryinfo, sc, updated))
+    open(f"{DOCS}/scoring.html", "w").write(build_scoring(tries, try_edges, tryinfo, sc, odds, updated))
     open(f"{DOCS}/analysis.html", "w").write(build_analysis(analysis, updated))
     open(f"{DOCS}/backtest.html", "w").write(build_backtest(analysis, updated, tryinfo, sc))
     open(f"{DOCS}/lab.html", "w").write(build_lab(analysis, updated))

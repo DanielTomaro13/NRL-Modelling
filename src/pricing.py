@@ -29,6 +29,7 @@ TARGETS = ["runsHitup", "runs", "runMetres", "postContactMetres", "tackles", "pe
 STAT_TO_TARGET = {
     "tackles": "tackles", "run_metres": "runMetres",
     "post_contact_metres": "postContactMetres", "runs": "runs",
+    "performance_points": "perf_points",  # the industry "Performance Points" market
     "fantasy": "perf_points",
 }
 DISP_PATH = "models/dispersion.json"
@@ -251,10 +252,10 @@ def price_tries(odds_path="reports/odds_snapshot.parquet",
         pid = r["playerId"]
         if pid not in pb.index:
             continue
-        mkt = _try_market(r.get("market_raw"), r.get("line"))
-        if mkt in ("first", "3+"):  # we model anytime + 2+ cleanly
-            if mkt == "first":
-                continue
+        # prefer the explicit try kind; fall back to inferring from name/line
+        mkt = r.get("kind") if isinstance(r.get("kind"), str) else _try_market(r.get("market_raw"), r.get("line"))
+        if mkt == "first":  # we don't model first-try-scorer (needs game script)
+            continue
         prow = pb.loc[pid]
         if hasattr(prow, "iloc") and getattr(prow, "ndim", 1) > 1:
             prow = prow.iloc[0]

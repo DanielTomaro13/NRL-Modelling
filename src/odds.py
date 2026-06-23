@@ -30,24 +30,31 @@ import nrl_meta as M
 # must match. Player props are detected only when a market title is
 # "<Proper Name> <stat phrase>", which excludes the thousands of team/match/try
 # combination markets.
-STAT_PATTERNS = [
-    ("post_contact_metres", r"^post[\s-]*contact\s*met(re|er)s?\b"),
-    ("kick_metres",         r"^kick(ing)?\s*met(re|er)s?\b"),
-    ("run_metres",          r"^(all\s*run\s*|run(ning)?\s*)?met(re|er)s?\b|^run\s*met(re|er)s?\b"),
-    ("tackle_breaks",       r"^tackle\s*(busts?|breaks?)\b"),
-    ("tackles",             r"^tackles?\b"),
-    ("runs",                r"^(runs|hit[\s-]*ups?|carries)\b"),
-    ("line_breaks",         r"^line\s*breaks?\b"),
-    ("offloads",            r"^offloads?\b"),
-    ("fantasy",             r"^fantasy\b"),
-    ("goals",               r"^goals\b|^goal\s*kicker\b"),
-    ("points",              r"^points\b"),
+# Industry market names (Sportsbet / Ladbrokes / Dabble): "<Player> <stat phrase>",
+# e.g. "Nicho Hynes Performance Points", "James Tedesco Most Metres", "Reece Walsh
+# Run Metres", "Cody Walker Player Points", "Mitchell Moses Kicker Points".
+# We locate the stat phrase anywhere in the title and take the player as the prefix.
+# Order matters: specific phrases (performance/kicker) before the generic "points".
+STAT_PHRASES = [
+    ("performance_points", r"\bperf(ormance)?\s*p(oin)?ts?\b"),
+    ("kicker_points",      r"\b(goal\s*)?kicker\s*p(oin)?ts?\b"),
+    ("post_contact_metres", r"\bpost[\s-]*contact\s*met(re|er)s?\b"),
+    ("kick_metres",        r"\bkick(ing)?\s*met(re|er)s?\b"),
+    ("run_metres",         r"\b(run(ning)?|all\s*run)?\s*met(re|er)s?\b"),
+    ("tackle_breaks",      r"\btackle\s*(busts?|breaks?)\b"),
+    ("line_breaks",        r"\bline\s*breaks?\b"),
+    ("tackles",            r"\btackles?\b"),
+    ("runs",               r"\b(hit[\s-]*ups?|carries)\b"),
+    ("offloads",           r"\boffloads?\b"),
+    ("fantasy",            r"\bfantasy\b"),
+    ("goals",              r"\bgoals?\b"),
+    ("points",             r"\bp(oin)?ts?\b"),   # "Points", "Points Scored", "Pts"
 ]
-# stat -> model target column (None = informational / no model prediction)
+# stat -> model target / pricing route
 STAT_TO_TARGET = {
     "tackles": "tackles", "run_metres": "runMetres",
     "post_contact_metres": "postContactMetres", "runs": "runs",
-    "fantasy": "perf_points",  # approximate — books' fantasy != our perf_points formula
+    "performance_points": "perf_points", "fantasy": "perf_points",
 }
 
 # A market title that begins with a 2-3 token proper name, then the stat phrase.
@@ -73,24 +80,50 @@ NUM_RE = re.compile(r"(\d+(?:\.\d+)?)")
 PLUS_RE = re.compile(r"(\d+)\s*\+")
 
 
+def _try_kind(market_raw):
+    """anytime / first / 2+ / 3+ from a try market title (keeps first-try out of anytime)."""
+    mr = (market_raw or "").lower()
+    if "first" in mr:
+        return "first"
+    if "3+" in mr or "3 or more" in mr:
+        return "3+"
+    if "2+" in mr or "2 or more" in mr:
+        return "2+"
+    return "anytime"
+
+
+def _looks_like_player(prefix, team_keys):
+    """True if `prefix` looks like a player name (2-3 capitalised tokens, not a team)."""
+    prefix = re.sub(r"\s+(most|total|player)$", "", prefix.strip(), flags=re.I)
+    toks = prefix.split()
+    if not (2 <= len(toks) <= 3):
+        return False, prefix
+    if toks[0].lower() in NON_PLAYER_LEAD:
+        return False, prefix
+    if not all(re.match(r"[A-Z][\w'’.\-]*$", t) for t in toks):
+        return False, prefix
+    pk = norm_team(prefix)
+    if any(pk and (pk in t or t in pk) for t in team_keys if t):
+        return False, prefix
+    return True, prefix
+
+
 def classify_player_prop(market_name, team_keys=()):
     """Return (player, stat) if the market is a clean player stat prop, else (None, None).
 
-    team_keys: normalised team names for the event, used to reject team-total markets
-    like "Parramatta Eels Total Points" that superficially look like a player title.
+    Finds the stat phrase anywhere in the title and treats the text before it as the
+    player; rejects team-total markets ("Parramatta Eels Total Points") and generic
+    market names.
     """
-    m = PLAYER_PROP_RE.match((market_name or "").strip())
-    if not m:
-        return None, None
-    player = m.group("player").strip()
-    if player.split()[0].lower() in NON_PLAYER_LEAD:
-        return None, None
-    pk = norm_team(player)
-    if any(pk and (pk in t or t in pk) for t in team_keys if t):
-        return None, None
-    rest = m.group("rest").lower().strip()
-    for key, pat in STAT_PATTERNS:
-        if re.search(pat, rest):
+    mn = (market_name or "").strip()
+    low = mn.lower()
+    for key, pat in STAT_PHRASES:
+        m = re.search(pat, low)
+        if not m:
+            continue
+        prefix = mn[:m.start()].strip(" -–:·")
+        ok, player = _looks_like_player(prefix, team_keys)
+        if ok:
             return player, key
     return None, None
 
@@ -199,6 +232,7 @@ def sportsbet_event_rows(ev):
                 if pr is None or "no " in snm.lower():
                     continue
                 rows.append({**base, "category": "player", "stat": "tries",
+                             "kind": _try_kind(mname),
                              "player": _strip_team(snm), "line": _plus_line(mname),
                              "over": None, "under": None, "single": pr,
                              "selection_raw": s.get("name", "")})
@@ -330,6 +364,7 @@ def ladbrokes_event_rows(ev):
                 if pr is None or "no scorer" in enm.lower() or "no try" in enm.lower():
                     continue
                 rows.append({**base, "category": "player", "stat": "tries",
+                             "kind": _try_kind(mname),
                              "player": _strip_team(enm), "line": _plus_line(mname),
                              "over": None, "under": None, "single": pr,
                              "selection_raw": enm})
@@ -357,6 +392,156 @@ def fetch_ladbrokes():
         rows.extend(ladbrokes_event_rows(ev))
     print(f"  [ladbrokes] {len(rows)} market rows")
     return rows
+
+
+# ----------------------------------------------------------------------------- Dabble
+# Dabble sits behind Cloudflare bot-protection that blocks datacenter IPs and plain
+# TLS clients (urllib/curl). It needs a real browser's TLS + a cf_clearance cookie.
+# We use curl_cffi (browser-TLS impersonation) and an optional DABBLE_COOKIE env var
+# (paste a cf_clearance cookie captured from a logged-in browser). In GitHub Actions
+# this usually 403s and is skipped; it works from an unblocked machine.
+DAB = "https://api.dabble.com.au"
+
+
+def _dab_session():
+    try:
+        from curl_cffi import requests as creq
+    except Exception:
+        print("  [dabble] curl_cffi not installed — skipping (pip install curl_cffi)")
+        return None, None
+    import os
+    headers = {"Accept": "application/json", "Origin": "https://dabble.com.au",
+               "Referer": "https://dabble.com.au/"}
+    cookie = os.environ.get("DABBLE_COOKIE", "").strip()
+    if cookie:
+        headers["Cookie"] = cookie
+    return creq, headers
+
+
+def _dab_get(creq, headers, path):
+    try:
+        r = creq.get(DAB + path, headers=headers, impersonate="chrome", timeout=30)
+        if r.status_code == 200:
+            return r.json()
+        if r.status_code == 403:
+            raise PermissionError("403 (Cloudflare)")
+    except PermissionError:
+        raise
+    except Exception as e:
+        print(f"  [dabble] {path} -> {e!r}")
+    return None
+
+
+def _dab_nrl_competition(creq, headers):
+    sports = _dab_get(creq, headers, "/sports")
+    slist = sports.get("data", sports) if isinstance(sports, dict) else (sports or [])
+    rl_ids = {s.get("id") for s in slist if "rugby league" in str(s.get("name", "")).lower()}
+    comps = _dab_get(creq, headers, "/competitions/")
+    clist = comps.get("data", comps) if isinstance(comps, dict) else (comps or [])
+    for c in clist:
+        nm = str(c.get("name", ""))
+        if "nrl" in nm.lower() and "origin" not in nm.lower() and "nrlw" not in nm.lower():
+            if not rl_ids or c.get("sportId") in rl_ids:
+                return c
+    return None
+
+
+def _dab_prices_map(detail):
+    """Dabble normalises markets/selections/prices by id -> selectionId -> (name, price, line)."""
+    data = detail.get("data", detail) if isinstance(detail, dict) else {}
+    price_by_sel = {}
+    for p in (data.get("prices") or []):
+        sid = p.get("selectionId") or p.get("id")
+        val = p.get("price") or p.get("decimalPrice") or p.get("odds")
+        if sid and val:
+            try:
+                price_by_sel[sid] = float(val)
+            except (TypeError, ValueError):
+                pass
+    sel_map = {}
+    for s in (data.get("selections") or []):
+        sid = s.get("id")
+        sel_map[sid] = {"name": s.get("name", ""),
+                        "price": price_by_sel.get(sid) or s.get("price"),
+                        "line": s.get("line") or s.get("points") or s.get("handicap")}
+    return data.get("markets") or [], sel_map
+
+
+def dabble_event_rows(creq, headers, fixture_id, ev_name):
+    detail = _dab_get(creq, headers, f"/frontend-api/sport-fixtures/details/{fixture_id}")
+    if not detail:
+        return []
+    markets, sel_map = _dab_prices_map(detail)
+    home = away = None
+    for sep in (" v ", " vs ", " V "):
+        if sep in ev_name:
+            home, away = ev_name.split(sep, 1)
+            break
+    team_keys = (norm_team(home), norm_team(away))
+    fetched = now_iso()
+    rows = []
+    for m in markets:
+        mname = m.get("name", "")
+        sels = m.get("selections")
+        if sels and isinstance(sels[0], dict) and "name" in sels[0]:
+            items = [(s.get("name", ""), s.get("price") or s.get("decimalPrice"),
+                      s.get("line") or s.get("points")) for s in sels]
+        else:
+            ids = m.get("selectionIds") or [s if isinstance(s, str) else s.get("id")
+                                            for s in (sels or [])]
+            items = [(sel_map.get(i, {}).get("name", ""), sel_map.get(i, {}).get("price"),
+                      sel_map.get(i, {}).get("line")) for i in ids]
+        base = {"book": "dabble", "event_name": ev_name, "home": home, "away": away,
+                "start_iso": None, "market_raw": mname, "fetched_at": fetched}
+        player, stat = classify_player_prop(mname, team_keys)
+        if stat:
+            over = under = line = None
+            for nm, pr, ln in items:
+                if pr is None:
+                    continue
+                num = NUM_RE.search(str(nm)) or (NUM_RE.search(str(ln)) if ln is not None else None)
+                if OVER_RE.search(str(nm)):
+                    over = float(pr); line = float(num.group(1)) if num else line
+                elif UNDER_RE.search(str(nm)):
+                    under = float(pr); line = float(num.group(1)) if num else line
+            if over is not None or under is not None:
+                rows.append({**base, "category": "player", "stat": stat, "player": player,
+                             "line": line, "over": over, "under": under, "single": None,
+                             "selection_raw": ""})
+        elif TRYSCORER_RE.match(mname.strip()):
+            for nm, pr, ln in items:
+                if pr is None or "no " in str(nm).lower():
+                    continue
+                rows.append({**base, "category": "player", "stat": "tries",
+                             "kind": _try_kind(mname), "player": _strip_team(nm),
+                             "line": _plus_line(mname), "over": None, "under": None,
+                             "single": float(pr), "selection_raw": nm})
+    return rows
+
+
+def fetch_dabble():
+    creq, headers = _dab_session()
+    if creq is None:
+        return []
+    try:
+        comp = _dab_nrl_competition(creq, headers)
+        if not comp:
+            print("  [dabble] NRL competition not found")
+            return []
+        fx = _dab_get(creq, headers, f"/competitions/{comp['id']}/sport-fixtures")
+        flist = fx.get("data", fx) if isinstance(fx, dict) else (fx or [])
+        rows = []
+        for f in flist:
+            fid = f.get("id") or f.get("fixtureId")
+            nm = f.get("name") or f.get("displayName") or ""
+            if fid:
+                rows.extend(dabble_event_rows(creq, headers, fid, nm))
+        print(f"  [dabble] {len(flist)} fixtures, {len(rows)} market rows")
+        return rows
+    except PermissionError:
+        print("  [dabble] blocked by Cloudflare (403) — set DABBLE_COOKIE or run from an "
+              "unblocked machine. Skipping.")
+        return []
 
 
 # ----------------------------------------------------------------------------- matching
@@ -429,14 +614,20 @@ def main():
         rows += fetch_ladbrokes()
     except Exception as e:
         print("  [ladbrokes] ERROR", repr(e))
+    try:
+        rows += fetch_dabble()
+    except Exception as e:
+        print("  [dabble] ERROR", repr(e))
 
     df = pd.DataFrame(rows)
     if df.empty:
         print("No odds rows fetched (props may not be open yet).")
         df = pd.DataFrame(columns=["book", "event_name", "home", "away", "start_iso",
-                                   "category", "stat", "player", "line", "over",
+                                   "category", "stat", "kind", "player", "line", "over",
                                    "under", "single", "market_raw", "selection_raw",
                                    "fetched_at"])
+    if "kind" not in df.columns:
+        df["kind"] = None
 
     try:
         preds = pd.read_parquet("reports/round_predictions.parquet")

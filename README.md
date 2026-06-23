@@ -88,6 +88,19 @@ Two GitHub Actions workflows keep it live:
 
 Enable Pages once in repo **Settings → Pages → Source: deploy from branch `main`, folder `/docs`**.
 
+### Bookmakers & markets
+Odds are pulled from **Sportsbet**, **Ladbrokes/Neds**, and **Dabble**, and the site shows
+every book's price side by side (best highlighted) so you can line-shop. The fetcher recognises
+the player markets the industry actually posts — **Try Scorer, Performance Points, Kicker Points,
+Player Points, (Most) Run Metres, (Most) Tackles** — and routes each to the right model.
+
+> **Dabble** is behind Cloudflare bot-protection that blocks datacenter IPs / plain TLS clients,
+> so it 403s from GitHub Actions. `src/odds.py` uses `curl_cffi` (browser-TLS impersonation) and an
+> optional `DABBLE_COOKIE` env var — paste a `cf_clearance` cookie from a logged-in browser (or add
+> it as a GitHub Actions secret) to enable Dabble. Without it, Dabble is skipped gracefully and the
+> other two books still work. To refresh odds locally: `python src/odds.py && python src/pricing.py
+> price && python src/pricing.py tries && python src/player_points.py price && python src/build_site.py`.
+
 ### Odds → value (distribution pricing)
 `src/pricing.py` turns each point prediction into a calibrated `Normal(mean, σ)`
 (σ fitted as `α + β·mean` from out-of-time residuals), prices the posted line off the

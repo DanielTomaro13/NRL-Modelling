@@ -163,7 +163,7 @@ def price_snapshot(odds_path="reports/odds_snapshot.parquet",
         print("points pricing skipped:", e)
         return pd.DataFrame()
     pb = preds.set_index("playerId")
-    ou = odds[(odds["stat"].isin(["points", "goals"]))
+    ou = odds[(odds["stat"].isin(["points", "goals", "kicker_points"]))
               & (odds["over"].notna() | odds["under"].notna())
               & odds["playerId"].notna()]
     rows = []
@@ -179,9 +179,11 @@ def price_snapshot(odds_path="reports/odds_snapshot.parquet",
         if r["stat"] == "points":
             p_over, p_under, p_push = p_over_under(lt, lg, lfg, line)
             model_mean = expected_points(lt, lg, lfg)
+        elif r["stat"] == "kicker_points":  # 2*goals + field goals  (set tries rate to 0)
+            p_over, p_under, p_push = p_over_under(0.0, lg, lfg, line)
+            model_mean = 2 * lg + lfg
         else:  # goals (Poisson on lambda_goals)
-            p_under = float(poisson.cdf(math.floor(line), lg)) if line == int(line) else \
-                float(poisson.cdf(math.floor(line), lg))
+            p_under = float(poisson.cdf(math.floor(line), lg))
             p_over = 1 - p_under
             p_push = 0.0
             model_mean = lg

@@ -29,8 +29,10 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: Fetch Sportsbet + Ladbrokes odds
+      - name: Fetch Sportsbet + Ladbrokes (+ Dabble if DABBLE_COOKIE set) odds
         run: python src/odds.py
+        env:
+          DABBLE_COOKIE: ${{ secrets.DABBLE_COOKIE }}
 
       - name: Price stat markets + compute edges
         run: python src/pricing.py price
