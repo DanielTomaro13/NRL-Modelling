@@ -5,7 +5,7 @@
 </head><body>
 <header><div class="wrap">
 <a class="brand" href="index.html">NRL <span>Player Projections</span></a>
-<nav><a class="" href="index.html">Predictions</a><a class="" href="value.html">Value</a><a class="" href="tries.html">Tries</a><a class="" href="analysis.html">Analysis</a><a class="on" href="backtest.html">Backtest</a><a class="" href="lab.html">Model Lab</a></nav></div></header>
+<nav><a class="" href="index.html">Predictions</a><a class="" href="value.html">Value</a><a class="" href="scoring.html">Scoring</a><a class="" href="analysis.html">Analysis</a><a class="on" href="backtest.html">Backtest</a><a class="" href="lab.html">Model Lab</a></nav></div></header>
 <main class="wrap"><div class="hero"><h1>Does it actually work?</h1>
 <p>Everything here is measured on seasons the model never saw in training (2023, 2024, 2025) —
 21,671 player-matches. No cherry-picking: these are out-of-sample results.</p></div>
@@ -88,12 +88,33 @@ out-of-sample player-matches (base score rate 0.196).</p>
 <tr><td class="pl">Try model</td><td>0.1405</td><td>0.4419</td><td>0.7296</td></tr><tr><td class="pl">Position base rate</td><td>0.1415</td><td>0.4457</td><td>0.7153</td></tr><tr><td class="pl">Trailing-5 form</td><td>0.1601</td><td>1.0245</td><td>0.6507</td></tr>
 </tbody></table></div></section>
 
+<section class="panel">
+<h3>Player-points model <span class="tag">try + kicker combined</span></h3>
+<p class="lead">Points = 4·tries + 2·goals + field goals, built by convolving the try and kicker
+Poisson models. Reliability of the over/under probability across 21,671
+out-of-sample player-matches.</p>
+<div class="split"><div><svg viewBox="0 0 520 340" class="chart" role="img"><line x1="52.0" y1="14" x2="52.0" y2="300" stroke="#2a3543" stroke-width="1"/><text x="52.0" y="316" text-anchor="middle" fill="#8aa0b2" font-size="11">0</text><line x1="142.4" y1="14" x2="142.4" y2="300" stroke="#2a3543" stroke-width="1"/><text x="142.4" y="316" text-anchor="middle" fill="#8aa0b2" font-size="11">0.2</text><line x1="232.8" y1="14" x2="232.8" y2="300" stroke="#2a3543" stroke-width="1"/><text x="232.8" y="316" text-anchor="middle" fill="#8aa0b2" font-size="11">0.4</text><line x1="323.2" y1="14" x2="323.2" y2="300" stroke="#2a3543" stroke-width="1"/><text x="323.2" y="316" text-anchor="middle" fill="#8aa0b2" font-size="11">0.6</text><line x1="413.6" y1="14" x2="413.6" y2="300" stroke="#2a3543" stroke-width="1"/><text x="413.6" y="316" text-anchor="middle" fill="#8aa0b2" font-size="11">0.8</text><line x1="504.0" y1="14" x2="504.0" y2="300" stroke="#2a3543" stroke-width="1"/><text x="504.0" y="316" text-anchor="middle" fill="#8aa0b2" font-size="11">1</text><line x1="52" y1="300.0" x2="504" y2="300.0" stroke="#2a3543" stroke-width="1"/><text x="46" y="304.0" text-anchor="end" fill="#8aa0b2" font-size="11">0</text><line x1="52" y1="242.8" x2="504" y2="242.8" stroke="#2a3543" stroke-width="1"/><text x="46" y="246.8" text-anchor="end" fill="#8aa0b2" font-size="11">0.2</text><line x1="52" y1="185.6" x2="504" y2="185.6" stroke="#2a3543" stroke-width="1"/><text x="46" y="189.6" text-anchor="end" fill="#8aa0b2" font-size="11">0.4</text><line x1="52" y1="128.4" x2="504" y2="128.4" stroke="#2a3543" stroke-width="1"/><text x="46" y="132.4" text-anchor="end" fill="#8aa0b2" font-size="11">0.6</text><line x1="52" y1="71.2" x2="504" y2="71.2" stroke="#2a3543" stroke-width="1"/><text x="46" y="75.2" text-anchor="end" fill="#8aa0b2" font-size="11">0.8</text><line x1="52" y1="14.0" x2="504" y2="14.0" stroke="#2a3543" stroke-width="1"/><text x="46" y="18.0" text-anchor="end" fill="#8aa0b2" font-size="11">1</text><line x1="52.0" y1="300.0" x2="504.0" y2="14.0" stroke="#8aa0b2" stroke-width="1.2" stroke-dasharray="4 4"/><path d="M75.5 283.4 L116.2 258.8 L165.0 223.9 L209.3 195.9 L252.7 186.5 L298.8 154.1 L344.0 151.3 L390.1 135.3 L435.3 85.8 L477.8 51.8" fill="none" stroke="#4cc2ff" stroke-width="2"/><circle cx="75.5" cy="283.4" r="3" fill="#4cc2ff"/><circle cx="116.2" cy="258.8" r="3" fill="#4cc2ff"/><circle cx="165.0" cy="223.9" r="3" fill="#4cc2ff"/><circle cx="209.3" cy="195.9" r="3" fill="#4cc2ff"/><circle cx="252.7" cy="186.5" r="3" fill="#4cc2ff"/><circle cx="298.8" cy="154.1" r="3" fill="#4cc2ff"/><circle cx="344.0" cy="151.3" r="3" fill="#4cc2ff"/><circle cx="390.1" cy="135.3" r="3" fill="#4cc2ff"/><circle cx="435.3" cy="85.8" r="3" fill="#4cc2ff"/><circle cx="477.8" cy="51.8" r="3" fill="#4cc2ff"/><text x="278.0" y="336" text-anchor="middle" fill="#8aa0b2" font-size="11.5">model probability over the points line</text><text x="13" y="157.0" text-anchor="middle" fill="#8aa0b2" font-size="11.5" transform="rotate(-90 13 157.0)">how often it went over</text></svg></div>
+<div class="note"><p>Predicting exact points is lumpy (each try is four points), but the implied
+over/under probabilities are well calibrated through the bulk, with mild overconfidence on big
+favourites.</p><p class="big">0.059</p>
+<p class="sub">mean gap between predicted and actual over-rate · points MAE 1.532</p></div></div></section><section class="panel">
+<h3>Goal-kicking model</h3>
+<p class="lead">Expected goals (conversions + penalties) as a Poisson rate. Goal-kicking is a
+persistent role, so the trailing average is a strong baseline — the model matches it on points
+error while staying well calibrated on <em>who</em> kicks (goal-probability error
+0.014).</p>
+<div class="tablewrap"><table><thead><tr><th class="pl">Metric</th><th>Model</th>
+<th>Trailing-5 baseline</th></tr></thead><tbody>
+<tr><td class="pl">Kicker-points MAE (all players)</td><td>0.321</td><td>0.315</td></tr>
+<tr><td class="pl">MAE on actual kickers</td><td>3.521</td><td>—</td></tr>
+</tbody></table></div></section>
+
 <p class="disclaim">Honest caveat: we don't have a historical archive of bookmaker prices, so this
 is a forecast-accuracy and probability-calibration backtest — not a profit/ROI claim. It shows the
 projections and their implied probabilities are sound; whether a given price is value still depends
 on the live market.</p></main>
 <footer><div class="wrap">
-<p>Updated Wed 24 Jun 2026, 06:30AM AEST. Predictions are model estimates for informational purposes only — not betting advice.</p>
+<p>Updated Wed 24 Jun 2026, 06:42AM AEST. Predictions are model estimates for informational purposes only — not betting advice.</p>
 <p class="rg">Gamble responsibly. 18+. For free &amp; confidential support call 1800 858 858 or visit
 <a href="https://www.gamblinghelponline.org.au/">gamblinghelponline.org.au</a>.</p>
 <p class="src">Model: per-target HistGradientBoosting on Champion Data match feeds. Odds: Sportsbet &amp; Ladbrokes public APIs. Not affiliated with the NRL or any wpbookmaker.</p>

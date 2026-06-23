@@ -47,6 +47,12 @@ jobs:
       - name: Train try-scorer model + backtest + predict
         run: python src/tryscorer.py
 
+      - name: Train goal-kicking model + backtest + predict
+        run: python src/kicker.py
+
+      - name: Player-points model (try + kicker) + backtest + predict
+        run: python src/player_points.py
+
       - name: Fetch Sportsbet + Ladbrokes odds
         run: python src/odds.py
         continue-on-error: true
@@ -57,6 +63,10 @@ jobs:
 
       - name: Price try-scorer markets
         run: python src/pricing.py tries
+        continue-on-error: true
+
+      - name: Price player-points + goals markets
+        run: python src/player_points.py price
         continue-on-error: true
 
       - name: Build site

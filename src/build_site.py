@@ -72,7 +72,20 @@ def load_inputs():
         tryinfo = json.load(open("reports/tryscorer.json"))
     except Exception:
         tryinfo = {}
-    return preds, odds, edges, analysis, tries, try_edges, tryinfo
+    sc = {}
+    for key, path in [("ppoints", "reports/player_points_predictions.parquet"),
+                      ("points_edges", "reports/points_edges.parquet")]:
+        try:
+            sc[key] = pd.read_parquet(path)
+        except Exception:
+            sc[key] = pd.DataFrame()
+    for key, path in [("ppinfo", "reports/player_points.json"),
+                      ("kinfo", "reports/kicker.json")]:
+        try:
+            sc[key] = json.load(open(path))
+        except Exception:
+            sc[key] = {}
+    return preds, odds, edges, analysis, tries, try_edges, tryinfo, sc
 
 
 def best_try_price(odds, pid):
@@ -101,7 +114,7 @@ def page(title, body, active, updated):
         f'<a class="{ "on" if k==active else "" }" href="{href}">{label}</a>'
         for k, href, label in [("index", "index.html", "Predictions"),
                                ("value", "value.html", "Value"),
-                               ("tries", "tries.html", "Tries"),
+                               ("scoring", "scoring.html", "Scoring"),
                                ("analysis", "analysis.html", "Analysis"),
                                ("backtest", "backtest.html", "Backtest"),
                                ("lab", "lab.html", "Model Lab")])
@@ -285,7 +298,45 @@ out-of-sample player-matches (base score rate {bt.get('base_rate','–')}).</p>
 </tbody></table></div></section>"""
 
 
-def build_backtest(analysis, updated, tryinfo=None):
+def build_points_panel(sc):
+    ppinfo = (sc or {}).get("ppinfo", {})
+    kinfo = (sc or {}).get("kinfo", {})
+    out = ""
+    pb = ppinfo.get("backtest", {})
+    if pb:
+        rel = pb.get("reliability", {})
+        pts = list(zip(rel.get("pred", []), rel.get("emp", [])))
+        svg = C.line_chart([{"name": "model", "color": C.ACC, "points": pts}],
+                           (0, 1), (0, 1), width=520, height=340, diagonal=True,
+                           x_label="model probability over the points line",
+                           y_label="how often it went over") if pts else ""
+        out += f"""<section class="panel">
+<h3>Player-points model <span class="tag">try + kicker combined</span></h3>
+<p class="lead">Points = 4·tries + 2·goals + field goals, built by convolving the try and kicker
+Poisson models. Reliability of the over/under probability across {pb.get('n_test',0):,}
+out-of-sample player-matches.</p>
+<div class="split"><div>{svg}</div>
+<div class="note"><p>Predicting exact points is lumpy (each try is four points), but the implied
+over/under probabilities are well calibrated through the bulk, with mild overconfidence on big
+favourites.</p><p class="big">{pb.get('calibration_error','–')}</p>
+<p class="sub">mean gap between predicted and actual over-rate · points MAE {pb.get('mae_points','–')}</p></div></div></section>"""
+    kb = kinfo.get("backtest", {})
+    if kb:
+        out += f"""<section class="panel">
+<h3>Goal-kicking model</h3>
+<p class="lead">Expected goals (conversions + penalties) as a Poisson rate. Goal-kicking is a
+persistent role, so the trailing average is a strong baseline — the model matches it on points
+error while staying well calibrated on <em>who</em> kicks (goal-probability error
+{kb.get('goal_calibration_error','–')}).</p>
+<div class="tablewrap"><table><thead><tr><th class="pl">Metric</th><th>Model</th>
+<th>Trailing-5 baseline</th></tr></thead><tbody>
+<tr><td class="pl">Kicker-points MAE (all players)</td><td>{kb.get('mae_model','–')}</td><td>{kb.get('mae_baseline','–')}</td></tr>
+<tr><td class="pl">MAE on actual kickers</td><td>{kb.get('mae_kickers_only','–')}</td><td>—</td></tr>
+</tbody></table></div></section>"""
+    return out
+
+
+def build_backtest(analysis, updated, tryinfo=None, sc=None):
     bt = analysis.get("backtest", {})
     if not bt:
         return page("Backtest", "<div class='hero'><h1>Backtest</h1></div>"
@@ -329,6 +380,8 @@ model says 70%, it lands ~70% of the time.</p>
 <div class="grid2">{_stat_cards(analysis)}</div></section>
 
 {build_try_panel(tryinfo or {})}
+
+{build_points_panel(sc)}
 
 <p class="disclaim">Honest caveat: we don't have a historical archive of bookmaker prices, so this
 is a forecast-accuracy and probability-calibration backtest — not a profit/ROI claim. It shows the
@@ -385,36 +438,28 @@ hookers tackle, halves drive performance points. The model conditions on positio
     return page(f"Analysis — {season}", body, "analysis", updated)
 
 
-def build_tries(tries, try_edges, tryinfo, preds, updated):
-    if tries.empty:
-        body = """<div class="hero"><h1>Try scorers</h1></div>
-<div class="banner">Run <code>python src/tryscorer.py</code> to generate try-scorer probabilities.</div>"""
-        return page("Try scorers", body, "tries", updated)
-    # best price + EV per player (anytime) from try_edges
+def fmt_odds_cell(p):
+    return f"${1/p:.2f}" if p and p > 1e-9 else "–"
+
+
+def _try_section(tries, try_edges):
     ev_by_pid = {}
     if not try_edges.empty:
         for _, e in try_edges[try_edges.market == "anytime"].iterrows():
             ev_by_pid[e["playerId"]] = e
-    bt = tryinfo.get("backtest", {})
-    auc = bt.get("model", {}).get("auc")
-    n_val = int((try_edges.ev_pct > 0).sum()) if len(try_edges) else 0
-    # group predictions by match, via preds match map (playerId -> matchId/teams already in tries)
     secs = []
     for mid, g in tries.groupby("matchId"):
         g = g.sort_values("p_anytime", ascending=False)
         teams = f'{g.iloc[0]["team"]} vs {g.iloc[0]["opp"]}'
         rows = []
-        for _, p in g.head(8).iterrows():
-            pid = p["playerId"]
-            e = ev_by_pid.get(pid)
+        for _, p in g.head(7).iterrows():
+            e = ev_by_pid.get(p["playerId"])
             if e is not None and e["ev_pct"] is not None:
-                ev = e["ev_pct"]
-                # guard implausible edges (usually a lineup/name mismatch)
-                credible = 0 < ev <= 40
+                ev = e["ev_pct"]; credible = 0 < ev <= 40
                 cls = "pos" if credible else ""
                 price = f'{e["price"]:.2f} <i>{esc(e["book"])[:3]}</i>'
-                evtxt = (f'<b>{ev:+.0f}%</b>' if credible
-                         else f'<span title="implausible — likely a lineup/name mismatch">{ev:+.0f}%?</span>')
+                evtxt = (f'<b>{ev:+.0f}%</b>' if credible else
+                         f'<span title="implausible — likely a lineup/name mismatch">{ev:+.0f}%?</span>')
                 odds_cell = f'<td class="{cls}">${price}</td><td class="{cls}">{evtxt}</td>'
             else:
                 odds_cell = '<td>–</td><td>–</td>'
@@ -424,25 +469,72 @@ def build_tries(tries, try_edges, tryinfo, preds, updated):
                 f'<td><b>{p["p_anytime"]*100:.0f}%</b></td><td>{p["p_2plus"]*100:.0f}%</td>'
                 f'<td class="mut">{fmt_odds_cell(p["p_anytime"])}</td>{odds_cell}</tr>')
         secs.append(f"""<section class="match"><h3>{esc(teams)}</h3>
-<div class="tablewrap"><table>
-<thead><tr><th class="pl">Player</th><th>Anytime</th><th>2+</th><th>Fair</th>
-<th>Best price</th><th>EV</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div></section>""")
-    intro = (f'Model probability each player scores, with the best live anytime price across '
-             f'Sportsbet &amp; Ladbrokes and the model’s edge. The try model ranks scorers '
-             f'at AUC {auc} out of sample — see the <a href="backtest.html">backtest</a>.'
-             if auc else 'Model try probabilities with live odds.')
-    banner = (f'<div class="banner pos">{n_val} anytime markets show model value (0–40% EV).</div>'
-              if n_val else '')
-    body = f"""<div class="hero"><h1>Try scorers</h1><p>{intro}</p></div>
-{banner}
+<div class="tablewrap"><table><thead><tr><th class="pl">Player</th><th>Anytime</th><th>2+</th>
+<th>Fair</th><th>Best price</th><th>EV</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div></section>""")
+    return "".join(secs)
+
+
+def _points_section(ppoints, points_edges):
+    if ppoints.empty:
+        return "<p class='mut'>Run the points model to populate.</p>"
+    ev_by = {}
+    if not points_edges.empty:
+        for _, e in points_edges[points_edges.stat == "points"].iterrows():
+            ev_by[e["playerId"]] = e
+    secs = []
+    grp = ppoints.groupby("matchId") if "matchId" in ppoints else [(0, ppoints)]
+    for mid, g in grp:
+        g = g.sort_values("exp_points", ascending=False)
+        teams = f'{g.iloc[0]["team"]} vs {g.iloc[0]["opp"]}'
+        rows = []
+        for _, p in g.head(6).iterrows():
+            e = ev_by.get(p["playerId"])
+            if e is not None and e.get("ev_pct") is not None:
+                ev = e["ev_pct"]; credible = 0 < ev <= 40
+                cls = "pos" if credible else ""
+                odds_cell = (f'<td>{e["line"]}</td><td class="{cls}">${e["best_price"]:.2f} '
+                             f'<i>{esc(e["book"])[:3]}</i></td>'
+                             f'<td class="{cls}"><b>{ev:+.0f}%</b></td>')
+            else:
+                odds_cell = '<td>–</td><td>–</td><td>–</td>'
+            rows.append(
+                f'<tr><td class="pl"><b>{esc(p["name"])}</b><span class="pos">{esc(p["position"])}</span>'
+                f'<span class="tm">{esc(p["team"])}</span></td>'
+                f'<td><b>{p["exp_points"]:.1f}</b></td><td class="mut">{p["exp_tries"]*4:.1f}</td>'
+                f'<td class="mut">{p["exp_kicker_points"]:.1f}</td>{odds_cell}</tr>')
+        secs.append(f"""<section class="match"><h3>{esc(teams)}</h3>
+<div class="tablewrap"><table><thead><tr><th class="pl">Player</th><th>Exp pts</th>
+<th>from tries</th><th>from kicking</th><th>Line</th><th>Best price</th><th>EV</th></tr></thead>
+<tbody>{''.join(rows)}</tbody></table></div></section>""")
+    return "".join(secs)
+
+
+def build_scoring(tries, try_edges, tryinfo, sc, updated):
+    ppoints = sc.get("ppoints", pd.DataFrame())
+    points_edges = sc.get("points_edges", pd.DataFrame())
+    if tries.empty and ppoints.empty:
+        body = """<div class="hero"><h1>Scoring</h1></div>
+<div class="banner">Run the try, kicker and points models to populate this page.</div>"""
+        return page("Scoring", body, "scoring", updated)
+    auc = tryinfo.get("backtest", {}).get("model", {}).get("auc")
+    n_try_val = int((try_edges.ev_pct.between(0.01, 40)).sum()) if len(try_edges) else 0
+    body = f"""<div class="hero"><h1>Scoring &amp; points</h1>
+<p>Three linked models: a try-scorer model, a goal-kicking model, and player points built by
+combining them (points = 4·tries + 2·goals + field goals). Probabilities are compared to the
+live Sportsbet &amp; Ladbrokes markets — see the <a href="backtest.html">backtest</a> for how
+calibrated they are{f' (try model ranks at AUC {auc})' if auc else ''}.</p></div>
+
+<section class="panel"><h3>Player points <span class="tag">try model + kicker model</span></h3>
+<p class="lead">Expected points per player, split into try points and goal-kicking points. Where a
+book has posted a player-points line, the model's edge is shown.</p></section>
+{_points_section(ppoints, points_edges)}
+
+<div class="hero" style="padding-top:8px"><h2 style="margin:0;font-size:20px">Try scorers</h2></div>
+{f'<div class="banner pos">{n_try_val} anytime markets show model value (0–40% EV).</div>' if n_try_val else ''}
 <p class="disclaim">Big EV numbers (flagged “?”) almost always mean a team-list or name mismatch,
-not real value — trust the credible single-digit/low edges and check the lineup.</p>
-{''.join(secs)}"""
-    return page("Try scorers", body, "tries", updated)
-
-
-def fmt_odds_cell(p):
-    return f"${1/p:.2f}" if p and p > 1e-9 else "–"
+not real value — trust the credible low edges and check the lineup.</p>
+{_try_section(tries, try_edges)}"""
+    return page("Scoring & points", body, "scoring", updated)
 
 
 def build_lab(analysis, updated):
@@ -674,7 +766,7 @@ function drawCurve(mu,sd,line){
 
 def main():
     rnd = int(sys.argv[1]) if len(sys.argv) > 1 else None
-    preds, odds, edges, analysis, tries, try_edges, tryinfo = load_inputs()
+    preds, odds, edges, analysis, tries, try_edges, tryinfo, sc = load_inputs()
     if rnd is None:
         rnd = int(preds["roundNumber"].iloc[0]) if "roundNumber" in preds else 0
     updated = now_aest().strftime("%a %d %b %Y, %I:%M%p AEST")
@@ -685,9 +777,9 @@ def main():
     open(f"{DOCS}/app.js", "w").write(APP_JS)
     open(f"{DOCS}/index.html", "w").write(build_index(preds, odds, edges, rnd, updated))
     open(f"{DOCS}/value.html", "w").write(build_value(edges, updated))
-    open(f"{DOCS}/tries.html", "w").write(build_tries(tries, try_edges, tryinfo, preds, updated))
+    open(f"{DOCS}/scoring.html", "w").write(build_scoring(tries, try_edges, tryinfo, sc, updated))
     open(f"{DOCS}/analysis.html", "w").write(build_analysis(analysis, updated))
-    open(f"{DOCS}/backtest.html", "w").write(build_backtest(analysis, updated, tryinfo))
+    open(f"{DOCS}/backtest.html", "w").write(build_backtest(analysis, updated, tryinfo, sc))
     open(f"{DOCS}/lab.html", "w").write(build_lab(analysis, updated))
     open(f"{DOCS}/.nojekyll", "w").write("")  # serve files verbatim
     n_matches = preds["matchId"].nunique()

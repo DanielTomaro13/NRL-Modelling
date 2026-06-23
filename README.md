@@ -48,17 +48,18 @@ The model is published as a static **GitHub Pages** site, rebuilt automatically.
 |---|---|---|
 | 6. Detect comp/round + scrape lineups + predict | `src/run_round.py` | `reports/round_predictions.parquet` |
 | 7. Analysis + backtest + feature importance | `src/analysis.py` | `reports/analysis.json`, `docs/data/model.json` |
-| 8. Fetch odds (Sportsbet + Ladbrokes) | `src/odds.py` | `reports/odds_snapshot.{parquet,json}` |
-| 9. Distribution pricing + value edges | `src/pricing.py price` | `reports/edges.{parquet,json}` |
-| 10. Render site | `src/build_site.py` | `docs/` (Pages root) |
+| 8. Try-scorer / goal-kicking / player-points models | `src/tryscorer.py`, `src/kicker.py`, `src/player_points.py` | `reports/{tryscorer,kicker,player_points}*` |
+| 9. Fetch odds (Sportsbet + Ladbrokes) | `src/odds.py` | `reports/odds_snapshot.{parquet,json}` |
+| 10. Pricing + value edges (stats, tries, points) | `src/pricing.py price`/`tries`, `src/player_points.py price` | `reports/{edges,try_edges,points_edges}.*` |
+| 11. Render site | `src/build_site.py` | `docs/` (Pages root) |
 
 The site has six pages: **Predictions** (per-match player projections + odds), **Value**
-(model-vs-market edges), **Tries** (try-scorer probabilities vs live anytime/2+ prices),
-**Analysis** (Champion Data — defences leaking metres, season leaders, position profiles),
-**Backtest** (out-of-sample accuracy + probability-calibration reliability for both the stat and
-try models — the trust page), and an interactive **Model Lab** (a live pricing explorer +
-permutation feature importance). Charts are dependency-free SVG (`src/charts.py`); the explorer is
-vanilla JS (`docs/app.js`) mirroring `src/pricing.py`.
+(model-vs-market edges), **Scoring** (try-scorer, goal-kicking and player-points models vs live
+prices), **Analysis** (Champion Data — defences leaking metres, season leaders, position profiles),
+**Backtest** (out-of-sample accuracy + probability-calibration reliability for every model — the
+trust page), and an interactive **Model Lab** (a live pricing explorer + permutation feature
+importance). Charts are dependency-free SVG (`src/charts.py`); the explorer is vanilla JS
+(`docs/app.js`) mirroring `src/pricing.py`.
 
 ### Try-scorer model (`src/tryscorer.py`)
 A Poisson model for a player's expected tries, reusing the leakage-safe feature machinery plus
@@ -67,7 +68,17 @@ offer — P(anytime)=1−e^−λ, P(2+)=1−e^−λ(1+λ), P(3+), E[tries] — t
 them against the **live** Sportsbet/Ladbrokes try markets (these open early, unlike stat props).
 Out of sample it ranks scorers at AUC ≈ 0.73 with calibration error ≈ 0.008, beating the position
 base-rate and trailing-5 baselines on Brier/log-loss. Implausibly large edges are flagged on the
-Tries page as likely lineup/name mismatches rather than real value.
+Scoring page as likely lineup/name mismatches rather than real value.
+
+### Goal-kicking + player-points models (`src/kicker.py`, `src/player_points.py`)
+The feed carries `conversions`, `penaltyGoals`, `fieldGoals`, so a player's points decompose
+exactly: `points = 4·tries + 2·goals + fieldGoals`. `kicker.py` is a Poisson model for expected
+goals (kicking is a persistent role, so it matches the trailing-average baseline on points error
+while staying well calibrated on *who* kicks — goal-probability error ≈ 0.014). `player_points.py`
+convolves the try and kicker Poissons into the full points distribution → expected points and
+P(points ≥ line) for any posted player-points line (out-of-sample over/under calibration ≈ 0.06,
+with mild overconfidence on big favourites). `player_points.py price` values live player-points
+and goals over/unders; both run daily (models) and 6-hourly (pricing).
 
 Two GitHub Actions workflows keep it live:
 - **`.github/workflows/model.yml`** — daily: ingest → features → train (+ calibrate

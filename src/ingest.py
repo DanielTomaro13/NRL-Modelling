@@ -32,6 +32,9 @@ STAT_FIELDS = [
     "passes", "runsHitupMetres", "tackleds", "tacklesIneffective",
     "kicksGeneralPlay", "kickMetres", "errors", "handlingErrors",
     "runsDummyHalf", "runsKickReturn", "runsNormal", "tries", "kicksCaught",
+    # goal-kicking (for the kicker-points + player-points models)
+    "conversions", "conversionAttempts", "penaltyGoals", "penaltyGoalAttempts",
+    "fieldGoals",
 ]
 
 

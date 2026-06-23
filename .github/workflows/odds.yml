@@ -38,6 +38,9 @@ jobs:
       - name: Price try-scorer markets
         run: python src/pricing.py tries
 
+      - name: Price player-points + goals markets
+        run: python src/player_points.py price
+
       - name: Build site
         run: python src/build_site.py
 

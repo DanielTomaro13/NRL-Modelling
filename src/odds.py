@@ -40,6 +40,7 @@ STAT_PATTERNS = [
     ("line_breaks",         r"^line\s*breaks?\b"),
     ("offloads",            r"^offloads?\b"),
     ("fantasy",             r"^fantasy\b"),
+    ("goals",               r"^goals\b|^goal\s*kicker\b"),
     ("points",              r"^points\b"),
 ]
 # stat -> model target column (None = informational / no model prediction)
