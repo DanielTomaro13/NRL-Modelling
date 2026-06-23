@@ -40,6 +40,36 @@ round-16 line MAE from 5.89 (proxy) to 5.38 and caught that a player on the indu
 sheet (Terrell May, prop) was not actually named — the Tigers' named "May" is the
 centre, Taylan.
 
+## Published site & automation
+
+The model is published as a static **GitHub Pages** site, rebuilt automatically.
+
+| Step | Script | Output |
+|---|---|---|
+| 6. Detect comp/round + scrape lineups + predict | `src/run_round.py` | `reports/round_predictions.parquet` |
+| 7. Fetch odds (Sportsbet + Ladbrokes) | `src/odds.py` | `reports/odds_snapshot.{parquet,json}` |
+| 8. Distribution pricing + value edges | `src/pricing.py price` | `reports/edges.{parquet,json}` |
+| 9. Render site | `src/build_site.py` | `docs/` (Pages root) |
+
+Two GitHub Actions workflows keep it live:
+- **`.github/workflows/model.yml`** — daily: ingest → features → train (+ calibrate
+  dispersion) → `run_round.py` → odds → pricing → site.
+- **`.github/workflows/odds.yml`** — every 6 hours: odds → pricing → site only
+  (odds move fast; the model doesn't). They share a concurrency group so commits never race.
+
+Enable Pages once in repo **Settings → Pages → Source: deploy from branch `main`, folder `/docs`**.
+
+### Odds → value (distribution pricing)
+`src/pricing.py` turns each point prediction into a calibrated `Normal(mean, σ)`
+(σ fitted as `α + β·mean` from out-of-time residuals), prices the posted line off the
+normal CDF (integer-line push band ±0.5, quarter-line 50/50 split), **de-vigs** the
+book's two-way price, and reports edge / EV per side. Player tackle / run-metre / fantasy
+lines open ~1–2 days before kickoff; until then the site shows predictions + try-scorer odds
+and the value board fills in automatically. `python src/pricing.py selftest` checks the maths.
+
+> Auto-detection: `src/nrl_meta.py` resolves the latest men's NRL competition id, the next
+> round to predict, and the nrl.com team-list URL — no hard-coded round each week.
+
 ## Method notes
 - **Data**: men's Premiership + Finals only. `postContactMetres` only exists from
   2021, so labelled training/eval is restricted to **2021–2026** (~39k rows); earlier

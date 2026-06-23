@@ -1,0 +1,52 @@
+name: Refresh odds & site
+
+# Lightweight refresh every 6 hours: re-fetch Sportsbet + Ladbrokes odds, re-price
+# against the latest committed predictions, and rebuild the site. Odds move fast;
+# the model is rebuilt separately by model.yml once a day.
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"   # every 6 hours
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nrl-publish        # shared with model.yml so commits never race
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Fetch Sportsbet + Ladbrokes odds
+        run: python src/odds.py
+
+      - name: Price markets + compute edges
+        run: python src/pricing.py price
+
+      - name: Build site
+        run: python src/build_site.py
+
+      - name: Commit odds + site
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A reports docs
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "Refresh odds + site [skip ci]"
+            git pull --rebase --autostash origin main || true
+            git push
+          fi

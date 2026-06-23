@@ -92,6 +92,13 @@ def main():
     print("\nSaved final models -> models/nrl_models.joblib (trained on 2021-2025, "
           f"{len(full)} rows)")
 
+    # calibrate predictive dispersion (sigma(mu) per target) for distribution pricing
+    try:
+        import pricing
+        pricing.calibrate_dispersion()
+    except Exception as e:
+        print("dispersion calibration skipped:", repr(e))
+
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,19 @@
+# Proprietary bookmaker pricing engine — reference only, NEVER commit
+MonteCarlo/
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Local odds cache / scratch
+*.tmp
+reports/_synth_*
+
+# Local editor / preview tooling
+.claude/
