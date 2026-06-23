@@ -65,7 +65,8 @@ PLAYER_PROP_RE = re.compile(
 # Covers Ladbrokes ("Anytime/First Try Scorer") and Sportsbet ("1+ Try", "2+ Tries").
 TRYSCORER_RE = re.compile(
     r"^(anytime|first) try ?scorer$|^player to score (2\+|3\+) tries$"
-    r"|^\d\+\s*tr(y|ies)$|^to score 2 or more tries$|^to score a hat[\s-]?trick$", re.I)
+    r"|^\d\+\s*tr(y|ies)$|^to score \d\+\s*tries?$|^to score \d or more tries?$"
+    r"|^to score a hat[\s-]?trick$", re.I)
 
 # Leading tokens that mean the title is a team/match market, not a player.
 NON_PLAYER_LEAD = {
@@ -412,139 +413,114 @@ def fetch_ladbrokes():
 
 
 # ----------------------------------------------------------------------------- Dabble
-# Dabble sits behind Cloudflare bot-protection that blocks datacenter IPs and plain
-# TLS clients (urllib/curl). It needs a real browser's TLS + a cf_clearance cookie.
-# We use curl_cffi (browser-TLS impersonation) and an optional DABBLE_COOKIE env var
-# (paste a cf_clearance cookie captured from a logged-in browser). In GitHub Actions
-# this usually 403s and is skipped; it works from an unblocked machine.
+# Dabble is the native iOS app's backend (Cloudflare-fronted). It authenticates with
+# a Cognito Bearer token — capture it from the app with Charles and pass it in env:
+#   DABBLE_AUTH  -> "Bearer eyJ..."   (required)
+#   DABBLE_DEVICE_ID, DABBLE_UA, DABBLE_COOKIE  (optional; sensible defaults below)
+# Tokens are short-lived (~1h); refresh by re-capturing. curl_cffi safari_ios TLS.
 DAB = "https://api.dabble.com.au"
+DAB_RUGBY_SPORT = "Rugby League"
 
 
 def _dab_session():
-    """Build a Dabble HTTP session. Supply the iOS app's captured auth via env:
-      DABBLE_AUTH    -> Authorization header value (e.g. "Bearer eyJ...")
-      DABBLE_COOKIE  -> Cookie header (e.g. cf_clearance=...)
-      DABBLE_HEADERS -> JSON object of any extra headers Charles shows
-    (capture them from the Dabble iOS app with Charles proxy — see README)."""
     try:
         from curl_cffi import requests as creq
     except Exception:
-        print("  [dabble] curl_cffi not installed — skipping (pip install curl_cffi)")
+        print("  [dabble] curl_cffi not installed — skipping")
         return None, None
     import os
-    headers = {"Accept": "application/json", "Origin": "https://dabble.com.au",
-               "Referer": "https://dabble.com.au/"}
-    if os.environ.get("DABBLE_AUTH", "").strip():
-        headers["Authorization"] = os.environ["DABBLE_AUTH"].strip()
+    auth = os.environ.get("DABBLE_AUTH", "").strip()
+    if not auth:
+        print("  [dabble] no DABBLE_AUTH (Bearer token) — skipping. Capture it from the "
+              "iOS app with Charles (see README).")
+        return None, None
+    if not auth.lower().startswith("bearer "):
+        auth = "Bearer " + auth
+    headers = {"authorization": auth, "accept": "application/json",
+               "x-device-id": os.environ.get("DABBLE_DEVICE_ID", "00000000-0000-0000-0000-000000000000"),
+               "user-agent": os.environ.get("DABBLE_UA", "Dabble/1000041710 CFNetwork/3826.600.41.2.1 Darwin/24.6.0"),
+               "x-app-version": os.environ.get("DABBLE_APP_VERSION", "4.17.10+019ededb"),
+               "accept-language": "en-AU,en;q=0.9"}
     if os.environ.get("DABBLE_COOKIE", "").strip():
-        headers["Cookie"] = os.environ["DABBLE_COOKIE"].strip()
-    extra = os.environ.get("DABBLE_HEADERS", "").strip()
-    if extra:
-        try:
-            headers.update(json.loads(extra))
-        except Exception as e:
-            print("  [dabble] bad DABBLE_HEADERS json:", e)
+        headers["cookie"] = os.environ["DABBLE_COOKIE"].strip()
     return creq, headers
 
 
 def _dab_get(creq, headers, path):
     try:
-        r = creq.get(DAB + path, headers=headers, impersonate="chrome", timeout=30)
+        r = creq.get(DAB + path, headers=headers, impersonate="safari_ios", timeout=30)
         if r.status_code == 200:
             return r.json()
-        if r.status_code == 403:
-            raise PermissionError("403 (Cloudflare)")
-    except PermissionError:
-        raise
+        print(f"  [dabble] {path[:60]}… HTTP {r.status_code}")
     except Exception as e:
-        print(f"  [dabble] {path} -> {e!r}")
+        print(f"  [dabble] {path[:50]}… {e!r}")
     return None
 
 
 def _dab_nrl_competition(creq, headers):
-    sports = _dab_get(creq, headers, "/sports")
-    slist = sports.get("data", sports) if isinstance(sports, dict) else (sports or [])
-    rl_ids = {s.get("id") for s in slist if "rugby league" in str(s.get("name", "")).lower()}
-    comps = _dab_get(creq, headers, "/competitions/")
-    clist = comps.get("data", comps) if isinstance(comps, dict) else (comps or [])
-    for c in clist:
-        nm = str(c.get("name", ""))
-        if "nrl" in nm.lower() and "origin" not in nm.lower() and "nrlw" not in nm.lower():
-            if not rl_ids or c.get("sportId") in rl_ids:
-                return c
+    d = _dab_get(creq, headers, "/competitions")
+    comps = (d.get("data", d) if isinstance(d, dict) else d) or []
+    rl = [c for c in comps if "rugby league" in str(c.get("sportName", "")).lower()] or comps
+    for c in comps:
+        if str(c.get("name", "")).strip().lower() == "nrl":
+            return c
     return None
 
 
-def _dab_prices_map(detail):
-    """Dabble normalises markets/selections/prices by id -> selectionId -> (name, price, line)."""
-    data = detail.get("data", detail) if isinstance(detail, dict) else {}
-    price_by_sel = {}
-    for p in (data.get("prices") or []):
-        sid = p.get("selectionId") or p.get("id")
-        val = p.get("price") or p.get("decimalPrice") or p.get("odds")
-        if sid and val:
-            try:
-                price_by_sel[sid] = float(val)
-            except (TypeError, ValueError):
-                pass
-    sel_map = {}
-    for s in (data.get("selections") or []):
-        sid = s.get("id")
-        sel_map[sid] = {"name": s.get("name", ""),
-                        "price": price_by_sel.get(sid) or s.get("price"),
-                        "line": s.get("line") or s.get("points") or s.get("handicap")}
-    return data.get("markets") or [], sel_map
-
-
-def dabble_event_rows(creq, headers, fixture_id, ev_name):
-    detail = _dab_get(creq, headers, f"/frontend-api/sport-fixtures/details/{fixture_id}")
+def dabble_fixture_rows(creq, headers, fixture):
+    """Pull full markets for one fixture via the details endpoint and parse them."""
+    fid = fixture.get("id")
+    detail = _dab_get(creq, headers, f"/frontend-api/sport-fixtures/details/{fid}")
     if not detail:
         return []
-    markets, sel_map = _dab_prices_map(detail)
+    sfd = detail.get("sportFixtureDetail") or detail.get("data", {}).get("sportFixtureDetail") or {}
+    markets = sfd.get("markets") or []
+    sel_name = {s["id"]: s.get("name", "") for s in sfd.get("selections", [])}
+    price_by_mkt = {}
+    for p in sfd.get("prices", []):
+        price_by_mkt.setdefault(p.get("marketId"), []).append(
+            (sel_name.get(p.get("selectionId")), p.get("price")))
+    teams = [t.get("name") for t in (sfd.get("teams") or fixture.get("teams") or [])]
+    name = fixture.get("name", sfd.get("name", ""))
     home = away = None
-    for sep in (" v ", " vs ", " V "):
-        if sep in ev_name:
-            home, away = ev_name.split(sep, 1)
-            break
+    if " v " in name:
+        home, away = name.split(" v ", 1)
+    elif len(teams) == 2:
+        home, away = teams[0], teams[1]
     team_keys = (norm_team(home), norm_team(away))
     fetched = now_iso()
     rows = []
     for m in markets:
-        mname = m.get("name", "")
-        sels = m.get("selections")
-        if sels and isinstance(sels[0], dict) and "name" in sels[0]:
-            items = [(s.get("name", ""), s.get("price") or s.get("decimalPrice"),
-                      s.get("line") or s.get("points")) for s in sels]
-        else:
-            ids = m.get("selectionIds") or [s if isinstance(s, str) else s.get("id")
-                                            for s in (sels or [])]
-            items = [(sel_map.get(i, {}).get("name", ""), sel_map.get(i, {}).get("price"),
-                      sel_map.get(i, {}).get("line")) for i in ids]
-        base = {"book": "dabble", "event_name": ev_name, "home": home, "away": away,
-                "start_iso": None, "market_raw": mname, "fetched_at": fetched}
-        player, stat = classify_player_prop(mname, team_keys)
-        if stat:
-            over = under = line = None
-            for nm, pr, ln in items:
-                if pr is None:
-                    continue
-                num = NUM_RE.search(str(nm)) or (NUM_RE.search(str(ln)) if ln is not None else None)
-                if OVER_RE.search(str(nm)):
-                    over = float(pr); line = float(num.group(1)) if num else line
-                elif UNDER_RE.search(str(nm)):
-                    under = float(pr); line = float(num.group(1)) if num else line
-            if over is not None or under is not None:
-                rows.append({**base, "category": "player", "stat": stat, "player": player,
-                             "line": line, "over": over, "under": under, "single": None,
-                             "selection_raw": ""})
-        elif TRYSCORER_RE.match(mname.strip()):
-            for nm, pr, ln in items:
-                if pr is None or "no " in str(nm).lower():
+        mname = (m.get("name") or "").strip()
+        outs = [(nm, pr) for nm, pr in price_by_mkt.get(m.get("id"), []) if nm and pr]
+        base = {"book": "dabble", "event_name": name, "home": home, "away": away,
+                "start_iso": fixture.get("advertisedStart"), "market_raw": mname,
+                "fetched_at": fetched}
+        # try-scorer markets (selections are players)
+        if TRYSCORER_RE.match(mname):
+            for nm, pr in outs:
+                if "no " in nm.lower():
                     continue
                 rows.append({**base, "category": "player", "stat": "tries",
                              "kind": _try_kind(mname), "player": _strip_team(nm),
-                             "line": _plus_line(mname), "over": None, "under": None,
+                             "line": None, "over": None, "under": None,
                              "single": float(pr), "selection_raw": nm})
+            continue
+        # player stat over/under markets ("<Player> points 7.5", "<Player> Tackles", ...)
+        player, stat = classify_player_prop(mname, team_keys)
+        if stat:
+            over = under = line = None
+            mnum = NUM_RE.search(mname)
+            for nm, pr in outs:
+                num = NUM_RE.search(nm) or mnum
+                if OVER_RE.search(nm):
+                    over = float(pr); line = float(num.group(1)) if num else line
+                elif UNDER_RE.search(nm):
+                    under = float(pr); line = float(num.group(1)) if num else line
+            if over is not None or under is not None:
+                rows.append({**base, "category": "player", "stat": stat, "kind": None,
+                             "player": player, "line": line, "over": over, "under": under,
+                             "single": None, "selection_raw": ""})
     return rows
 
 
@@ -552,25 +528,20 @@ def fetch_dabble():
     creq, headers = _dab_session()
     if creq is None:
         return []
-    try:
-        comp = _dab_nrl_competition(creq, headers)
-        if not comp:
-            print("  [dabble] NRL competition not found")
-            return []
-        fx = _dab_get(creq, headers, f"/competitions/{comp['id']}/sport-fixtures")
-        flist = fx.get("data", fx) if isinstance(fx, dict) else (fx or [])
-        rows = []
-        for f in flist:
-            fid = f.get("id") or f.get("fixtureId")
-            nm = f.get("name") or f.get("displayName") or ""
-            if fid:
-                rows.extend(dabble_event_rows(creq, headers, fid, nm))
-        print(f"  [dabble] {len(flist)} fixtures, {len(rows)} market rows")
-        return rows
-    except PermissionError:
-        print("  [dabble] blocked by Cloudflare (403) — set DABBLE_COOKIE or run from an "
-              "unblocked machine. Skipping.")
+    comp = _dab_nrl_competition(creq, headers)
+    if not comp:
+        print("  [dabble] NRL competition not found (token expired?)")
         return []
+    fx = _dab_get(creq, headers,
+                  f"/frontend-api/competitions/{comp['id']}/sport-fixtures"
+                  "?includeInPlay=false&exclude%5B%5D=none")
+    flist = (fx.get("data", fx) if isinstance(fx, dict) else fx) or []
+    rows = []
+    for fixture in flist:
+        if fixture.get("id"):
+            rows.extend(dabble_fixture_rows(creq, headers, fixture))
+    print(f"  [dabble] {len(flist)} fixtures, {len(rows)} market rows")
+    return rows
 
 
 # ----------------------------------------------------------------------------- PointsBet

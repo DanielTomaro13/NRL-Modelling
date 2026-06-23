@@ -99,8 +99,22 @@ Rabbitohs"). All books use `curl_cffi` (browser-TLS) and run from `src/odds.py`.
 
 > **TAB** uses OAuth2 — set `TAB_ACCESS_TOKEN` (a token expires in ~3h) or, for auto-refresh,
 > `TAB_CLIENT_ID` + `TAB_CLIENT_SECRET` (as env vars / GitHub secrets). **PointsBet** needs no auth.
-> **Dabble** needs a `cf_clearance`/bearer (see below). AU bookmaker APIs may geo-block some CI
-> regions; running `python src/odds.py` from an AU connection always works.
+> **Dabble** is the iOS app's backend — set `DABBLE_AUTH="Bearer <token>"` captured from the app
+> with Charles (see below; ~1h expiry). AU bookmaker APIs may geo-block some CI regions; running
+> `python src/odds.py` from an AU connection always works.
+
+#### Capturing the Dabble token (Charles, iOS)
+Dabble has no web API; the token comes from the app. With Charles proxying the iPhone (SSL proxy
+`*.dabble.com.au`), open the app → an NRL game → player markets, find a request to
+`api.dabble.com.au`, and copy the **`authorization: Bearer …`** header. Then:
+```bash
+export DABBLE_AUTH='Bearer eyJ...'
+python src/odds.py     # pulls Dabble tries + player-points markets
+```
+`src/odds.py` discovers the NRL competition, lists fixtures via
+`/frontend-api/competitions/{id}/sport-fixtures`, and reads full markets from
+`/frontend-api/sport-fixtures/details/{fixtureId}` (`sportFixtureDetail.{markets,selections,prices}`).
+The token is short-lived — re-capture when it lapses, or add it as the `DABBLE_AUTH` GitHub secret.
 
 > **Dabble** is behind Cloudflare bot-protection that blocks datacenter IPs / plain TLS clients,
 > so it 403s from GitHub Actions. `src/odds.py` uses `curl_cffi` (browser-TLS impersonation) and an
