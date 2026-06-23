@@ -53,11 +53,14 @@ jobs:
       - name: Player-points model (try + kicker) + backtest + predict
         run: python src/player_points.py
 
-      - name: Fetch Sportsbet + Ladbrokes (+ Dabble if DABBLE_COOKIE set) odds
+      - name: Fetch Sportsbet, Ladbrokes, TAB, PointsBet (+ Dabble) odds
         run: python src/odds.py
         continue-on-error: true
         env:
           DABBLE_COOKIE: ${{ secrets.DABBLE_COOKIE }}
+          TAB_ACCESS_TOKEN: ${{ secrets.TAB_ACCESS_TOKEN }}
+          TAB_CLIENT_ID: ${{ secrets.TAB_CLIENT_ID }}
+          TAB_CLIENT_SECRET: ${{ secrets.TAB_CLIENT_SECRET }}
 
       - name: Price stat markets + compute edges
         run: python src/pricing.py price

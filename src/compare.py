@@ -89,8 +89,8 @@ def main():
                              "mkey": f"try_{kind}", "market": MARKET_LABEL[f"try_{kind}"],
                              "line": None, "my_p": round(mp, 3),
                              "my_fair": round(1 / mp, 2) if mp > 1e-9 else None,
-                             "sportsbet": books.get("sportsbet"), "ladbrokes": books.get("ladbrokes"),
-                             "dabble": books.get("dabble"), "best_book": bk, "best": bp,
+                             "books": {b: round(v, 2) for b, v in books.items()},
+                             "best_book": bk, "best": bp,
                              "ev": round((mp * bp - 1) * 100, 1) if bp else None})
 
     # ---- over/under markets (show the OVER selection) ----
@@ -125,8 +125,8 @@ def main():
                      "mkey": stat, "market": MARKET_LABEL.get(stat, stat),
                      "line": float(line), "my_p": round(mp, 3),
                      "my_fair": round(1 / mp, 2) if mp > 1e-9 else None,
-                     "sportsbet": books.get("sportsbet"), "ladbrokes": books.get("ladbrokes"),
-                     "dabble": books.get("dabble"), "best_book": bk, "best": bp,
+                     "books": {b: round(v, 2) for b, v in books.items()},
+                     "best_book": bk, "best": bp,
                      "ev": round((mp * bp - 1) * 100, 1) if bp else None})
 
     rows = [r for r in rows if r["player"]]

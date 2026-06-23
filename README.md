@@ -89,10 +89,18 @@ Two GitHub Actions workflows keep it live:
 Enable Pages once in repo **Settings → Pages → Source: deploy from branch `main`, folder `/docs`**.
 
 ### Bookmakers & markets
-Odds are pulled from **Sportsbet**, **Ladbrokes/Neds**, and **Dabble**, and the site shows
-every book's price side by side (best highlighted) so you can line-shop. The fetcher recognises
-the player markets the industry actually posts — **Try Scorer, Performance Points, Kicker Points,
-Player Points, (Most) Run Metres, (Most) Tackles** — and routes each to the right model.
+Odds are pulled from **Sportsbet**, **Ladbrokes/Neds**, **TAB**, **PointsBet** and **Dabble**, and
+the **Compare odds** dashboard shows every book's price side by side (best highlighted) next to the
+model's fair "my price", with match/market/+EV/longshot filters. The fetcher recognises the player
+markets the industry posts — **Try Scorer, Performance Points, Kicker Points, Player Points,
+(Most) Run Metres, (Most) Tackles** — and routes each to the right model. Team names are
+canonicalised to NRL nicknames so a player lines up across books (e.g. "Souths" == "South Sydney
+Rabbitohs"). All books use `curl_cffi` (browser-TLS) and run from `src/odds.py`.
+
+> **TAB** uses OAuth2 — set `TAB_ACCESS_TOKEN` (a token expires in ~3h) or, for auto-refresh,
+> `TAB_CLIENT_ID` + `TAB_CLIENT_SECRET` (as env vars / GitHub secrets). **PointsBet** needs no auth.
+> **Dabble** needs a `cf_clearance`/bearer (see below). AU bookmaker APIs may geo-block some CI
+> regions; running `python src/odds.py` from an AU connection always works.
 
 > **Dabble** is behind Cloudflare bot-protection that blocks datacenter IPs / plain TLS clients,
 > so it 403s from GitHub Actions. `src/odds.py` uses `curl_cffi` (browser-TLS impersonation) and an

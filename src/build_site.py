@@ -92,8 +92,10 @@ def load_inputs():
     return preds, odds, edges, analysis, tries, try_edges, tryinfo, sc
 
 
-BOOKS = [("sportsbet", "SB"), ("ladbrokes", "LAD"), ("dabble", "DAB")]
-BOOK_ABBR = {"sportsbet": "SB", "ladbrokes": "LAD", "dabble": "DAB"}
+BOOKS = [("sportsbet", "SB"), ("ladbrokes", "LAD"), ("tab", "TAB"),
+         ("pointsbet", "PB"), ("dabble", "DAB")]
+BOOK_ABBR = {"sportsbet": "SB", "ladbrokes": "LAD", "tab": "TAB",
+             "pointsbet": "PB", "dabble": "DAB"}
 
 
 def best_try_price(odds, pid):
@@ -260,30 +262,31 @@ tackle / metre / points lines open closer to kickoff. This dashboard fills autom
     market_opts = "".join(f'<option value="{esc(m)}">{esc(m)}</option>' for m in markets)
 
     def price_cell(r, book):
-        v = r.get(book)
+        v = (r.get("books") or {}).get(book)
         if v is None:
             return '<td class="mut">–</td>'
         best = (r.get("best_book") == book)
         return f'<td class="{"pos" if best else ""}">{v:.2f}</td>'
 
+    book_head = "".join(f"<th>{lbl}</th>" for _, lbl in BOOKS)
     trs = []
     for r in rows:
         ev = r.get("ev")
         ev_txt = "" if ev is None else f"{ev:+.0f}%"
         ev_cls = "pos" if (ev is not None and 0 < ev <= 40) else ("warn" if (ev or 0) > 40 else "")
         line = "" if r.get("line") is None else f'{r["line"]:g}'
+        cells = "".join(price_cell(r, k) for k, _ in BOOKS)
         trs.append(
             f'<tr data-match="{esc(r.get("match",""))}" data-market="{esc(r.get("market",""))}" '
             f'data-ev="{ev if ev is not None else ""}">'
             f'<td class="pl"><b>{esc(r.get("player"))}</b><span class="tm">{esc(r.get("team"))}</span></td>'
             f'<td>{esc(r.get("market"))}</td><td class="mut">{line}</td>'
-            f'<td><b>{r.get("my_fair","–")}</b></td>'
-            f'{price_cell(r,"sportsbet")}{price_cell(r,"ladbrokes")}{price_cell(r,"dabble")}'
+            f'<td><b>{r.get("my_fair","–")}</b></td>{cells}'
             f'<td class="{ev_cls}"><b>{ev_txt}</b></td></tr>')
     body = f"""<div class="hero"><h1>Compare odds</h1>
-<p>Every player market we can price, with <b>my price</b> (the model's fair odds) next to
-each book's live price — Sportsbet, Ladbrokes and Dabble — best highlighted. Positive EV (green)
-means the best available price is longer than the model thinks it should be.</p></div>
+<p>Every player market we can price, with <b>my price</b> (the model's fair odds) next to each
+book's live price — Sportsbet, Ladbrokes, TAB, PointsBet and Dabble — best highlighted. Positive EV
+(green) means the best available price is longer than the model thinks it should be.</p></div>
 
 <div class="filters" id="cmpf">
   <label>Match <select id="f-match" onchange="cmpFilter()"><option value="all">All matches</option>{match_opts}</select></label>
@@ -294,7 +297,7 @@ means the best available price is longer than the model thinks it should be.</p>
 </div>
 <div class="tablewrap"><table id="cmp"><thead><tr>
 <th class="pl">Player</th><th>Market</th><th>Line</th><th>My price</th>
-<th>SB</th><th>LAD</th><th>DAB</th><th>Best EV</th></tr></thead>
+{book_head}<th>Best EV</th></tr></thead>
 <tbody>{''.join(trs)}</tbody></table></div>
 <p class="disclaim">“My price” is the model's fair odds (1 ÷ model probability), no margin. Very large EV
 usually means a team-list or name mismatch — “hide longshots” filters those out by default.</p>

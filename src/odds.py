@@ -69,9 +69,9 @@ TRYSCORER_RE = re.compile(
 
 # Leading tokens that mean the title is a team/match market, not a player.
 NON_PLAYER_LEAD = {
-    "total", "alternative", "match", "both", "either", "first", "last", "highest",
-    "team", "home", "away", "winning", "half", "full", "exact", "most", "any",
-    "race", "next", "anytime", "player", "1st", "2nd",
+    "total", "alternative", "alternate", "match", "both", "either", "first", "last",
+    "highest", "team", "home", "away", "winning", "half", "full", "exact", "most", "any",
+    "race", "next", "anytime", "player", "1st", "2nd", "combined", "to",
 }
 
 OVER_RE = re.compile(r"\bover\b", re.I)
@@ -138,15 +138,32 @@ def norm_name(s):
     return re.sub(r"[^a-z]", "", s.lower())
 
 
+# Canonical NRL nicknames so every book's team naming aligns (Souths == South Sydney
+# Rabbitohs == Rabbitohs). Order/keys chosen to avoid the "Sydney" collision between
+# South Sydney (rabbitohs) and Sydney Roosters.
+NICKNAMES = {
+    "broncos": ["broncos", "brisbane"], "raiders": ["raiders", "canberra"],
+    "bulldogs": ["bulldogs", "canterbury", "bankstown"], "sharks": ["sharks", "cronulla"],
+    "dolphins": ["dolphins"], "titans": ["titans", "gold coast"],
+    "sea eagles": ["sea eagles", "seaeagles", "manly"], "storm": ["storm", "melbourne"],
+    "knights": ["knights", "newcastle"],
+    "cowboys": ["cowboys", "north queensland", "nth queensland", "townsville"],
+    "eels": ["eels", "parramatta", "parra"], "panthers": ["panthers", "penrith"],
+    "rabbitohs": ["rabbitohs", "souths", "south sydney"],
+    "dragons": ["dragons", "st george", "illawarra"],
+    "roosters": ["roosters", "easts", "sydney roosters"],
+    "warriors": ["warriors", "new zealand"],
+    "tigers": ["tigers", "wests", "west tigers"],
+}
+
+
 def norm_team(s):
-    """Loose team key so Sportsbet/Ladbrokes/ChampionData names align."""
-    s = (s or "").lower()
-    s = re.sub(r"\b(nrl|rugby league|fc)\b", "", s)
-    # keep a distinctive token (last word usually the nickname)
-    s = re.sub(r"[^a-z ]", "", s)
-    toks = [t for t in s.split() if t not in
-            {"the", "of", "and", "v", "vs"}]
-    return " ".join(toks)
+    """Canonical NRL nickname for any book's team string; '' if not a team."""
+    low = (s or "").lower()
+    for canon, keys in NICKNAMES.items():
+        if any(k in low for k in keys):
+            return canon
+    return re.sub(r"[^a-z ]", "", low).strip()
 
 
 def _get(url, headers, retries=3, timeout=40):
@@ -556,6 +573,154 @@ def fetch_dabble():
         return []
 
 
+# ----------------------------------------------------------------------------- PointsBet
+PB_V2 = "https://api.au.pointsbet.com/api/v2"
+PB_MES = "https://api.au.pointsbet.com/api/mes/v3"
+PB_HDR = {"User-Agent": "Mozilla/5.0", "Accept": "application/json",
+          "Origin": "https://pointsbet.com.au"}
+PB_TRY = {"anytime tryscorer": "anytime", "to score 2+ tries": "2+",
+          "to score 3+ tries": "3+", "first tryscorer": "first"}
+
+
+def _cffi_get(url, headers, params=None):
+    try:
+        from curl_cffi import requests as creq
+    except Exception:
+        return None
+    try:
+        r = creq.get(url, headers=headers, params=params, impersonate="chrome", timeout=30)
+        return r.json() if r.status_code == 200 else None
+    except Exception as e:
+        print(f"  [http] {url[:70]}… {e!r}")
+        return None
+
+
+def pointsbet_nrl_key():
+    d = _cffi_get(f"{PB_V2}/sports/list/", PB_HDR)
+    if not d:
+        return None
+    sports = d.get("sports", d) if isinstance(d, dict) else d
+    for s in sports:
+        if "rugby league" in str(s.get("name", "")).lower():
+            for c in s.get("competitions", []):
+                if str(c.get("name", "")).strip().lower() == "nrl":
+                    return c.get("key") or c.get("competitionKey") or c.get("id")
+    return None
+
+
+def fetch_pointsbet():
+    key = pointsbet_nrl_key()
+    if not key:
+        print("  [pointsbet] NRL competition not found")
+        return []
+    feat = _cffi_get(f"{PB_MES}/events/featured/competition/{key}", PB_HDR)
+    evs = (feat.get("events", []) if isinstance(feat, dict) else feat) or []
+    rows, fetched = [], now_iso()
+    for ev in evs:
+        eid = ev.get("key") or ev.get("eventId") or ev.get("id")
+        home, away = ev.get("homeTeam"), ev.get("awayTeam")
+        name = ev.get("name") or f"{home} v {away}"
+        team_keys = (norm_team(home), norm_team(away))
+        det = _cffi_get(f"{PB_MES}/events/{eid}", PB_HDR)
+        if not det:
+            continue
+        markets = det.get("fixedOddsMarkets") or det.get("markets") or []
+        base0 = {"book": "pointsbet", "event_name": name, "home": home, "away": away,
+                 "start_iso": ev.get("startsAt"), "fetched_at": fetched}
+        for m in markets:
+            mname = re.sub(r"\s*\([^)]*\)\s*$", "", m.get("name", "")).strip()
+            outs = m.get("outcomes") or []
+            kind = PB_TRY.get(mname.lower())
+            base = {**base0, "market_raw": m.get("name", "")}
+            if kind:
+                for o in outs:
+                    pr = o.get("price")
+                    nm = o.get("name", "")
+                    if not pr or "no " in nm.lower():
+                        continue
+                    rows.append({**base, "category": "player", "stat": "tries", "kind": kind,
+                                 "player": _strip_team(nm), "line": _plus_line(mname),
+                                 "over": None, "under": None, "single": float(pr),
+                                 "selection_raw": nm})
+                continue
+            player, stat = classify_player_prop(mname, team_keys)
+            if stat:  # player O/U stat market
+                over = under = line = None
+                for o in outs:
+                    nm, pr = o.get("name", ""), o.get("price")
+                    ln = o.get("points")
+                    if pr is None:
+                        continue
+                    if OVER_RE.search(nm):
+                        over = float(pr); line = float(ln) if ln is not None else line
+                    elif UNDER_RE.search(nm):
+                        under = float(pr); line = float(ln) if ln is not None else line
+                if over is not None or under is not None:
+                    rows.append({**base, "category": "player", "stat": stat, "kind": None,
+                                 "player": player, "line": line, "over": over, "under": under,
+                                 "single": None, "selection_raw": ""})
+    print(f"  [pointsbet] {len(evs)} NRL events, {len(rows)} market rows")
+    return rows
+
+
+# ----------------------------------------------------------------------------- TAB
+TAB_BASE = "https://api.beta.tab.com.au/v1/tab-info-service"
+TAB_TOKEN_URL = "https://api.beta.tab.com.au/oauth/token"
+TAB_TRY = {"to score a try": "anytime", "1st try scorer": "first",
+           "last try scorer": "last", "to score a hat trick": "3+"}
+
+
+def _tab_token():
+    import os
+    tok = os.environ.get("TAB_ACCESS_TOKEN", "").strip()
+    if tok:
+        return tok
+    cid, csec = os.environ.get("TAB_CLIENT_ID", ""), os.environ.get("TAB_CLIENT_SECRET", "")
+    if cid and csec:
+        d = _cffi_get(f"{TAB_TOKEN_URL}?grant_type=client_credentials&client_id={cid}"
+                      f"&client_secret={csec}", {"Accept": "application/json"})
+        if d and d.get("access_token"):
+            return d["access_token"]
+    return None
+
+
+def fetch_tab():
+    tok = _tab_token()
+    if not tok:
+        print("  [tab] no TAB_ACCESS_TOKEN / TAB_CLIENT_ID+SECRET — skipping")
+        return []
+    hdr = {"Authorization": f"Bearer {tok}", "Accept": "application/json",
+           "User-Agent": "Mozilla/5.0"}
+    d = _cffi_get(f"{TAB_BASE}/sports/Rugby%20League/competitions/NRL"
+                  "?jurisdiction=VIC&homeState=VIC", hdr)
+    if not d:
+        print("  [tab] NRL competition fetch failed (token expired?)")
+        return []
+    rows, fetched = [], now_iso()
+    for match in d.get("matches", []):
+        cons = match.get("contestants") or []
+        home = next((c["name"] for c in cons if c.get("isHome")), None)
+        away = next((c["name"] for c in cons if not c.get("isHome")), None)
+        name = match.get("name", f"{home} v {away}")
+        for mk in match.get("markets", []):
+            bo = (mk.get("betOption") or "").strip()
+            props = mk.get("propositions", [])
+            base = {"book": "tab", "event_name": name, "home": home, "away": away,
+                    "start_iso": match.get("startTime"), "market_raw": bo, "fetched_at": fetched}
+            kind = TAB_TRY.get(bo.lower())
+            if kind in ("anytime", "2+", "3+"):
+                for p in props:
+                    pr = p.get("returnWin")
+                    nm = p.get("name", "")
+                    if not pr or "no try" in nm.lower():
+                        continue
+                    rows.append({**base, "category": "player", "stat": "tries", "kind": kind,
+                                 "player": _strip_team(nm), "line": None, "over": None,
+                                 "under": None, "single": float(pr), "selection_raw": nm})
+    print(f"  [tab] {len(d.get('matches', []))} matches, {len(rows)} market rows")
+    return rows
+
+
 # ----------------------------------------------------------------------------- matching
 def split_name(s):
     """Return (first_initial, surname_key). Handles 'D.Cherry-Evans' and 'Daly Cherry-Evans'."""
@@ -630,6 +795,14 @@ def main():
         rows += fetch_dabble()
     except Exception as e:
         print("  [dabble] ERROR", repr(e))
+    try:
+        rows += fetch_pointsbet()
+    except Exception as e:
+        print("  [pointsbet] ERROR", repr(e))
+    try:
+        rows += fetch_tab()
+    except Exception as e:
+        print("  [tab] ERROR", repr(e))
 
     df = pd.DataFrame(rows)
     if df.empty:
