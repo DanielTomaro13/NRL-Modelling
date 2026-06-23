@@ -43,6 +43,9 @@ jobs:
       - name: Price player-points + goals markets
         run: python src/player_points.py price
 
+      - name: Build odds-comparison dashboard data
+        run: python src/compare.py
+
       - name: Build site
         run: python src/build_site.py
 

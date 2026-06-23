@@ -70,5 +70,17 @@ border:1px solid var(--line);border-radius:8px;padding:7px 9px;font-size:14px}
 .verdict.win{background:var(--posbg);color:var(--pos);border:1px solid #1c6b4a}
 .verdict.lose{background:#2a1414;color:#e0958f;border:1px solid #5a2b2b}
 .prose.panel{max-width:none}.prose.panel p{color:#c4d2de;margin:.5em 0}
+/* filters + tabs */
+.filters{position:sticky;top:58px;z-index:4;display:flex;flex-wrap:wrap;gap:12px;align-items:center;
+margin:6px 0 14px;padding:11px 14px;border:1px solid var(--line);border-radius:12px;background:rgba(20,26,36,.96);backdrop-filter:blur(8px)}
+.filters label{color:var(--mut);font-size:13px;display:flex;align-items:center;gap:7px}
+.filters select{background:#0f141c;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:6px 9px;font-size:13.5px}
+.filters .chk{cursor:pointer}.filters .count{margin-left:auto;color:var(--mut);font-size:12.5px}
+td.warn{color:var(--warn)}.warn{color:var(--warn)}
+.tabs{display:flex;gap:6px;margin:4px 0 0;flex-wrap:wrap}
+.tabs button{background:var(--chip);color:var(--mut);border:1px solid var(--line);border-radius:9px;
+padding:7px 14px;font-size:13.5px;cursor:pointer;font-weight:600}
+.tabs button.on{background:var(--posbg);color:var(--ink);border-color:#1c6b4a}
+.tabpane{display:none}.tabpane.on{display:block}
 @media(max-width:760px){.split,.grid2,.duo,.lab{grid-template-columns:1fr}}
-@media(max-width:640px){.hero h1{font-size:22px}nav a{padding:6px 8px}}
+@media(max-width:640px){.hero h1{font-size:22px}nav a{padding:6px 8px}.filters{top:54px}}

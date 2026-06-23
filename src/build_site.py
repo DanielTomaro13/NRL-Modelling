@@ -85,10 +85,15 @@ def load_inputs():
             sc[key] = json.load(open(path))
         except Exception:
             sc[key] = {}
+    try:
+        sc["comparison"] = json.load(open("reports/comparison.json"))
+    except Exception:
+        sc["comparison"] = {}
     return preds, odds, edges, analysis, tries, try_edges, tryinfo, sc
 
 
-BOOKS = [("sportsbet", "SBT"), ("ladbrokes", "LAD"), ("dabble", "DAB")]
+BOOKS = [("sportsbet", "SB"), ("ladbrokes", "LAD"), ("dabble", "DAB")]
+BOOK_ABBR = {"sportsbet": "SB", "ladbrokes": "LAD", "dabble": "DAB"}
 
 
 def best_try_price(odds, pid):
@@ -147,7 +152,7 @@ def page(title, body, active, updated):
     nav = "".join(
         f'<a class="{ "on" if k==active else "" }" href="{href}">{label}</a>'
         for k, href, label in [("index", "index.html", "Predictions"),
-                               ("value", "value.html", "Value"),
+                               ("compare", "compare.html", "Compare odds"),
                                ("scoring", "scoring.html", "Scoring"),
                                ("analysis", "analysis.html", "Analysis"),
                                ("backtest", "backtest.html", "Backtest"),
@@ -204,13 +209,13 @@ def match_section(preds, odds, edges, match_rows):
             chips.append(stat_badge(er))
         tp = best_try_price(odds, pid)
         if tp:
-            chips.append(f'<span class="try">TS ${tp["price"]:.2f} <i>{esc(tp["book"])[:3]}</i></span>')
+            chips.append(f'<span class="try">TS ${tp["price"]:.2f} <i>{BOOK_ABBR.get(tp["book"], esc(tp["book"]))}</i></span>')
         chip_html = " ".join(chips)
         body_rows.append(
             f'<tr><td class="pl"><b>{esc(p["name"])}</b><span class="pos">{esc(p["position"])}</span>'
             f'<span class="tm">{esc(p["team"])}</span></td>{cells}'
             f'<td class="ch">{chip_html}</td></tr>')
-    return f"""<section class="match">
+    return f"""<section class="match" data-match="{esc(title)}">
 <h3>{esc(title)} <span class="ko">{esc(kickoff)}</span></h3>
 <div class="tablewrap"><table>
 <thead><tr><th class="pl">Player</th>{head}<th>Odds / value</th></tr></thead>
@@ -219,28 +224,82 @@ def match_section(preds, odds, edges, match_rows):
 
 def build_index(preds, odds, edges, rnd, updated):
     # value summary banner
-    n_edges = int((edges["ev_pct"] > 0).sum()) if len(edges) else 0
     n_odds = int((odds.get("playerId").notna().sum())) if (len(odds) and "playerId" in odds) else 0
-    if n_edges:
-        banner = (f'<a class="banner pos" href="value.html">{n_edges} positive-EV edges '
-                  f'found vs the market &rarr;</a>')
-    elif n_odds:
-        banner = (f'<div class="banner">{n_odds} player markets live (try-scorer). '
-                  f'Tackle / run-metre lines open closer to kickoff — value edges will appear here.</div>')
-    else:
-        banner = ('<div class="banner">Player prop odds open ~1–2 days before kickoff. '
-                  'Predictions below; odds &amp; value populate automatically.</div>')
+    banner = (f'<a class="banner pos" href="compare.html">Compare every market against '
+              f'Sportsbet, Ladbrokes &amp; Dabble on the odds dashboard &rarr;</a>' if n_odds else
+              '<div class="banner">Player prop odds open ~1–2 days before kickoff; '
+              'odds &amp; value populate automatically.</div>')
 
-    secs = []
+    secs, match_labels = [], []
     for mid, g in preds.groupby("matchId"):
         secs.append(match_section(preds, odds, edges, g))
+        match_labels.append(g.iloc[0]["team"] + " vs " + g.iloc[0]["opp"])
+    match_opts = "".join(f'<option value="{esc(m)}">{esc(m)}</option>' for m in match_labels)
     body = f"""<div class="hero"><h1>Round {rnd} player projections</h1>
 <p>Six per-player quantities for every named NRL player — hit-ups, runs, run metres,
 post-contact metres, tackles and performance points — from a leakage-safe gradient-boosting
 model, with live bookmaker odds and model-vs-market value.</p></div>
 {banner}
-{''.join(secs)}"""
+<div class="filters"><label>Jump to match <select onchange="scFilter(this.value)">
+<option value="all">All matches</option>{match_opts}</select></label></div>
+{''.join(secs)}
+<script src="app.js"></script>"""
     return page(f"NRL Round {rnd} player projections", body, "index", updated)
+
+
+def build_compare(comparison, updated):
+    rows = (comparison or {}).get("rows", [])
+    if not rows:
+        body = """<div class="hero"><h1>Compare odds</h1></div>
+<div class="banner">No live markets to compare yet. Try-scorer prices are usually up first;
+tackle / metre / points lines open closer to kickoff. This dashboard fills automatically.</div>"""
+        return page("Compare odds", body, "compare", updated)
+    matches = comparison.get("matches", [])
+    markets = comparison.get("markets", [])
+    match_opts = "".join(f'<option value="{esc(m)}">{esc(m)}</option>' for m in matches)
+    market_opts = "".join(f'<option value="{esc(m)}">{esc(m)}</option>' for m in markets)
+
+    def price_cell(r, book):
+        v = r.get(book)
+        if v is None:
+            return '<td class="mut">–</td>'
+        best = (r.get("best_book") == book)
+        return f'<td class="{"pos" if best else ""}">{v:.2f}</td>'
+
+    trs = []
+    for r in rows:
+        ev = r.get("ev")
+        ev_txt = "" if ev is None else f"{ev:+.0f}%"
+        ev_cls = "pos" if (ev is not None and 0 < ev <= 40) else ("warn" if (ev or 0) > 40 else "")
+        line = "" if r.get("line") is None else f'{r["line"]:g}'
+        trs.append(
+            f'<tr data-match="{esc(r.get("match",""))}" data-market="{esc(r.get("market",""))}" '
+            f'data-ev="{ev if ev is not None else ""}">'
+            f'<td class="pl"><b>{esc(r.get("player"))}</b><span class="tm">{esc(r.get("team"))}</span></td>'
+            f'<td>{esc(r.get("market"))}</td><td class="mut">{line}</td>'
+            f'<td><b>{r.get("my_fair","–")}</b></td>'
+            f'{price_cell(r,"sportsbet")}{price_cell(r,"ladbrokes")}{price_cell(r,"dabble")}'
+            f'<td class="{ev_cls}"><b>{ev_txt}</b></td></tr>')
+    body = f"""<div class="hero"><h1>Compare odds</h1>
+<p>Every player market we can price, with <b>my price</b> (the model's fair odds) next to
+each book's live price — Sportsbet, Ladbrokes and Dabble — best highlighted. Positive EV (green)
+means the best available price is longer than the model thinks it should be.</p></div>
+
+<div class="filters" id="cmpf">
+  <label>Match <select id="f-match" onchange="cmpFilter()"><option value="all">All matches</option>{match_opts}</select></label>
+  <label>Market <select id="f-market" onchange="cmpFilter()"><option value="all">All markets</option>{market_opts}</select></label>
+  <label class="chk"><input type="checkbox" id="f-ev" onchange="cmpFilter()"> +EV only</label>
+  <label class="chk"><input type="checkbox" id="f-cred" checked onchange="cmpFilter()"> hide longshots</label>
+  <span class="count" id="f-count"></span>
+</div>
+<div class="tablewrap"><table id="cmp"><thead><tr>
+<th class="pl">Player</th><th>Market</th><th>Line</th><th>My price</th>
+<th>SB</th><th>LAD</th><th>DAB</th><th>Best EV</th></tr></thead>
+<tbody>{''.join(trs)}</tbody></table></div>
+<p class="disclaim">“My price” is the model's fair odds (1 ÷ model probability), no margin. Very large EV
+usually means a team-list or name mismatch — “hide longshots” filters those out by default.</p>
+<script src="app.js"></script>"""
+    return page("Compare odds", body, "compare", updated)
 
 
 def build_value(edges, updated):
@@ -424,7 +483,7 @@ on the live market.</p>"""
     return page("Backtest & accuracy", body, "backtest", updated)
 
 
-def build_analysis(analysis, updated):
+def build_analysis(analysis, tryinfo, kinfo, updated):
     ci = analysis.get("champion", {})
     if not ci:
         return page("Analysis", "<div class='hero'><h1>Analysis</h1></div>"
@@ -464,6 +523,17 @@ have the friendliest match-ups for run-metre and post-contact overs.</p>{def_svg
 {leader_block('postContactMetres','Most post-contact metres',' m')}
 </div></section>
 
+<section class="panel"><h3>Scoring leaders <span class="tag">try + kicker models</span></h3>
+<p class="lead">Who finds the line and who slots the goals — the inputs to the player-points model.</p>
+<div class="grid2">
+<div class="lcard"><h4>Most tries / game</h4>{C.hbars(
+    [(l["name"], l["per_game"]) for l in (tryinfo or {}).get("leaders", [])[:12]],
+    color=C.POS, value_fmt="{:.2f}", width=540, label_w=150)}</div>
+<div class="lcard"><h4>Most kicker points / game</h4>{C.hbars(
+    [(l["name"], l["per_game"]) for l in (kinfo or {}).get("leaders", [])[:12]],
+    color=C.ACC, value_fmt="{:.1f}", width=540, label_w=150)}</div>
+</div></section>
+
 <section class="panel"><h3>Average output by position</h3>
 <p class="lead">Roles shape the stat line — props pile up run metres and post-contact, locks and
 hookers tackle, halves drive performance points. The model conditions on position throughout.</p>
@@ -491,10 +561,49 @@ def _try_section(tries, odds):
                 f'<td><b>{p["p_anytime"]*100:.0f}%</b></td>'
                 f'<td class="mut">{fmt_odds_cell(p["p_anytime"])}</td>'
                 f'{book_cells(by_book, float(p["p_anytime"]))}</tr>')
-        secs.append(f"""<section class="match"><h3>{esc(teams)}</h3>
+        secs.append(f"""<section class="match" data-match="{esc(teams)}"><h3>{esc(teams)}</h3>
 <div class="tablewrap"><table><thead><tr><th class="pl">Player</th><th>Anytime</th>
 <th>Fair</th>{book_head}<th>Best EV</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div></section>""")
     return "".join(secs)
+
+
+def _kicker_section(ppoints, odds):
+    """Top expected goal-kickers per match, with expected goals + any live kicker-points odds."""
+    if ppoints.empty or "exp_kicker_points" not in ppoints:
+        return "<p class='mut'>Run the kicker model to populate.</p>"
+    book_head = "".join(f"<th>{lbl}</th>" for _, lbl in BOOKS)
+    secs = []
+    grp = ppoints.groupby("matchId") if "matchId" in ppoints else [(0, ppoints)]
+    for mid, g in grp:
+        kk = g[g["exp_kicker_points"] > 0.5].sort_values("exp_kicker_points", ascending=False)
+        if kk.empty:
+            continue
+        teams = f'{g.iloc[0]["team"]} vs {g.iloc[0]["opp"]}'
+        rows = []
+        for _, p in kk.head(4).iterrows():
+            by_book = ou_by_book(odds, p["playerId"], "kicker_points")
+            rows.append(
+                f'<tr><td class="pl"><b>{esc(p["name"])}</b><span class="tm">{esc(p["team"])}</span></td>'
+                f'<td><b>{p["exp_kicker_points"]:.1f}</b></td><td class="mut">{p["lg"]:.1f}</td>'
+                f'{book_cells(by_book, None)}</tr>')
+        secs.append(f"""<section class="match" data-match="{esc(teams)}"><h3>{esc(teams)}</h3>
+<div class="tablewrap"><table><thead><tr><th class="pl">Goal kicker</th><th>Exp pts</th>
+<th>Exp goals</th>{book_head}<th>Best EV</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div></section>""")
+    return "".join(secs) or "<p class='mut'>No goal-kickers identified for this round yet.</p>"
+
+
+def ou_by_book(odds, pid, stat):
+    """{book: over-price} for a player's over/under market of a given stat."""
+    if odds.empty or "playerId" not in odds:
+        return {}
+    sub = odds[(odds["playerId"] == pid) & (odds["stat"] == stat) & odds["over"].notna()]
+    out = {}
+    for _, r in sub.iterrows():
+        b = r["book"]
+        p = float(r["over"])
+        if b not in out or p > out[b]:
+            out[b] = p
+    return out
 
 
 def _points_section(ppoints, points_edges):
@@ -516,7 +625,7 @@ def _points_section(ppoints, points_edges):
                 ev = e["ev_pct"]; credible = 0 < ev <= 40
                 cls = "pos" if credible else ""
                 odds_cell = (f'<td>{e["line"]}</td><td class="{cls}">${e["best_price"]:.2f} '
-                             f'<i>{esc(e["book"])[:3]}</i></td>'
+                             f'<i>{BOOK_ABBR.get(e["book"], esc(e["book"]))}</i></td>'
                              f'<td class="{cls}"><b>{ev:+.0f}%</b></td>')
             else:
                 odds_cell = '<td>–</td><td>–</td><td>–</td>'
@@ -525,7 +634,7 @@ def _points_section(ppoints, points_edges):
                 f'<span class="tm">{esc(p["team"])}</span></td>'
                 f'<td><b>{p["exp_points"]:.1f}</b></td><td class="mut">{p["exp_tries"]*4:.1f}</td>'
                 f'<td class="mut">{p["exp_kicker_points"]:.1f}</td>{odds_cell}</tr>')
-        secs.append(f"""<section class="match"><h3>{esc(teams)}</h3>
+        secs.append(f"""<section class="match" data-match="{esc(teams)}"><h3>{esc(teams)}</h3>
 <div class="tablewrap"><table><thead><tr><th class="pl">Player</th><th>Exp pts</th>
 <th>from tries</th><th>from kicking</th><th>Line</th><th>Best price</th><th>EV</th></tr></thead>
 <tbody>{''.join(rows)}</tbody></table></div></section>""")
@@ -540,24 +649,47 @@ def build_scoring(tries, try_edges, tryinfo, sc, odds, updated):
 <div class="banner">Run the try, kicker and points models to populate this page.</div>"""
         return page("Scoring", body, "scoring", updated)
     auc = tryinfo.get("backtest", {}).get("model", {}).get("auc")
-    n_try_val = int((try_edges.ev_pct.between(0.01, 40)).sum()) if len(try_edges) else 0
+
+    # match filter options (from whichever predictions we have)
+    match_set = []
+    src = ppoints if not ppoints.empty else tries
+    if "matchId" in src:
+        for _, g in src.groupby("matchId"):
+            match_set.append(f'{g.iloc[0]["team"]} vs {g.iloc[0]["opp"]}')
+    match_opts = "".join(f'<option value="{esc(m)}">{esc(m)}</option>' for m in sorted(set(match_set)))
+
+    tabs = [("points", "Player points"), ("kicker", "Kicker points"), ("tries", "Try scorers")]
+    tab_btns = "".join(
+        f'<button data-tabgroup="sc" data-tab="{k}" class="{"on" if i==0 else ""}" '
+        f'onclick="showTab(\'sc\',\'{k}\')">{lbl}</button>' for i, (k, lbl) in enumerate(tabs))
+    panes = {
+        "points": f'<p class="lead">Expected points per player, split into try points and '
+                  f'goal-kicking points; the model edge shows where a book has posted a line.</p>'
+                  + _points_section(ppoints, points_edges),
+        "kicker": f'<p class="lead">The designated goal-kickers and their expected kicking points '
+                  f'(2 per goal + field goals), with any live kicker-points lines.</p>'
+                  + _kicker_section(ppoints, odds),
+        "tries": f'<p class="lead">Model anytime-try probability and fair price next to every '
+                 f'book\'s live price (best highlighted). Best EV = edge at the best price.</p>'
+                 + _try_section(tries, odds),
+    }
+    pane_html = "".join(
+        f'<div class="tabpane {"on" if i==0 else ""}" data-pane="sc" data-pane-name="{k}">{panes[k]}</div>'
+        for i, (k, _l) in enumerate(tabs))
+
     body = f"""<div class="hero"><h1>Scoring &amp; points</h1>
-<p>Three linked models: a try-scorer model, a goal-kicking model, and player points built by
-combining them (points = 4·tries + 2·goals + field goals). Probabilities are compared to the
-live Sportsbet &amp; Ladbrokes markets — see the <a href="backtest.html">backtest</a> for how
-calibrated they are{f' (try model ranks at AUC {auc})' if auc else ''}.</p></div>
-
-<section class="panel"><h3>Player points <span class="tag">try model + kicker model</span></h3>
-<p class="lead">Expected points per player, split into try points and goal-kicking points. Where a
-book has posted a player-points line, the model's edge is shown.</p></section>
-{_points_section(ppoints, points_edges)}
-
-<div class="hero" style="padding-top:8px"><h2 style="margin:0;font-size:20px">Try scorers</h2>
-<p>Model anytime-try probability and fair price, next to every book's live price
-(best highlighted). Best EV = model edge at the best available price.</p></div>
+<p>Three linked models — a try-scorer model, a goal-kicking model, and player points built by
+combining them (points = 4·tries + 2·goals + field goals), priced against the live books. See the
+<a href="backtest.html">backtest</a> for calibration{f' (try model AUC {auc})' if auc else ''}.</p></div>
+<div class="filters">
+  <div class="tabs">{tab_btns}</div>
+  <label style="margin-left:auto">Match <select onchange="scFilter(this.value)">
+    <option value="all">All matches</option>{match_opts}</select></label>
+</div>
+{pane_html}
 <p class="disclaim">Very large EV usually means a team-list or name mismatch, not real value —
-trust the credible low edges and check the lineup.</p>
-{_try_section(tries, odds)}"""
+check the lineup. <a href="compare.html">Compare odds →</a></p>
+<script src="app.js"></script>"""
     return page("Scoring & points", body, "scoring", updated)
 
 
@@ -600,6 +732,15 @@ computes your edge — the same pipeline that fills the value board.</p>
 <p class="lead">Permutation importance on held-out data — how much each input matters to each stat.
 Recent form and role dominate; opponent-defence features add the match-up signal.</p>
 <div class="grid2">{imp_html}</div></section>
+
+<section class="panel"><h3>Six stat models + three scoring models</h3>
+<p class="lead">The explorer above covers the six continuous stat markets (tackles, run metres,
+hit-ups, post-contact metres, performance points, runs). Scoring is handled by three more models —
+a <b>try-scorer</b> (Poisson on tries), a <b>goal-kicking</b> model (Poisson on goals), and
+<b>player points</b> built by convolving them (points = 4·tries + 2·goals + field goals). Their
+out-of-sample calibration is on the <a href="backtest.html">backtest</a>, their projections on
+<a href="scoring.html">Scoring</a>, and every market lines up against the books on
+<a href="compare.html">Compare odds</a>.</p></section>
 
 <section class="prose panel">
 <h3>The method, in four steps</h3>
@@ -692,8 +833,20 @@ border:1px solid var(--line);border-radius:8px;padding:7px 9px;font-size:14px}
 .verdict.win{background:var(--posbg);color:var(--pos);border:1px solid #1c6b4a}
 .verdict.lose{background:#2a1414;color:#e0958f;border:1px solid #5a2b2b}
 .prose.panel{max-width:none}.prose.panel p{color:#c4d2de;margin:.5em 0}
+/* filters + tabs */
+.filters{position:sticky;top:58px;z-index:4;display:flex;flex-wrap:wrap;gap:12px;align-items:center;
+margin:6px 0 14px;padding:11px 14px;border:1px solid var(--line);border-radius:12px;background:rgba(20,26,36,.96);backdrop-filter:blur(8px)}
+.filters label{color:var(--mut);font-size:13px;display:flex;align-items:center;gap:7px}
+.filters select{background:#0f141c;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:6px 9px;font-size:13.5px}
+.filters .chk{cursor:pointer}.filters .count{margin-left:auto;color:var(--mut);font-size:12.5px}
+td.warn{color:var(--warn)}.warn{color:var(--warn)}
+.tabs{display:flex;gap:6px;margin:4px 0 0;flex-wrap:wrap}
+.tabs button{background:var(--chip);color:var(--mut);border:1px solid var(--line);border-radius:9px;
+padding:7px 14px;font-size:13.5px;cursor:pointer;font-weight:600}
+.tabs button.on{background:var(--posbg);color:var(--ink);border-color:#1c6b4a}
+.tabpane{display:none}.tabpane.on{display:block}
 @media(max-width:760px){.split,.grid2,.duo,.lab{grid-template-columns:1fr}}
-@media(max-width:640px){.hero h1{font-size:22px}nav a{padding:6px 8px}}
+@media(max-width:640px){.hero h1{font-size:22px}nav a{padding:6px 8px}.filters{top:54px}}
 """
 
 # ---------------------------------------------------------------- interactive Model Lab JS
@@ -785,6 +938,38 @@ function drawCurve(mu,sd,line){
   '<text x="'+(ml+pw-4)+'" y="'+(mt+ph-6)+'" text-anchor="end" fill="#39d98a" font-size="11">over →</text></svg>';
  document.getElementById('lab-curve').innerHTML=svg;
 }
+
+// ---- Compare dashboard filters ----
+function cmpFilter(){
+ var tbl=document.getElementById('cmp'); if(!tbl)return;
+ var match=(document.getElementById('f-match')||{}).value||'all';
+ var market=(document.getElementById('f-market')||{}).value||'all';
+ var evonly=(document.getElementById('f-ev')||{}).checked;
+ var cred=(document.getElementById('f-cred')||{}).checked;
+ var shown=0;
+ tbl.querySelectorAll('tbody tr').forEach(function(tr){
+   var ok=true, ev=parseFloat(tr.dataset.ev);
+   if(match!=='all' && tr.dataset.match!==match) ok=false;
+   if(market!=='all' && tr.dataset.market!==market) ok=false;
+   if(evonly && !(ev>0)) ok=false;
+   if(cred && (!isNaN(ev) && (ev>40||ev<-95))) ok=false;  // hide implausible longshots
+   tr.style.display=ok?'':'none'; if(ok)shown++;
+ });
+ var c=document.getElementById('f-count'); if(c)c.textContent=shown+' markets';
+}
+// ---- Scoring match filter ----
+function scFilter(match){
+ document.querySelectorAll('section.match').forEach(function(s){
+   s.style.display=(match==='all'||s.dataset.match===match)?'':'none';});
+}
+// ---- Tabs (Scoring) ----
+function showTab(group,name){
+ document.querySelectorAll('[data-tabgroup="'+group+'"]').forEach(function(b){
+   b.classList.toggle('on', b.dataset.tab===name);});
+ document.querySelectorAll('[data-pane="'+group+'"]').forEach(function(p){
+   p.classList.toggle('on', p.dataset.paneName===name);});
+}
+document.addEventListener('DOMContentLoaded', function(){ if(document.getElementById('cmp')) cmpFilter(); });
 """
 
 
@@ -800,9 +985,10 @@ def main():
     open(f"{DOCS}/style.css", "w").write(CSS)
     open(f"{DOCS}/app.js", "w").write(APP_JS)
     open(f"{DOCS}/index.html", "w").write(build_index(preds, odds, edges, rnd, updated))
-    open(f"{DOCS}/value.html", "w").write(build_value(edges, updated))
+    open(f"{DOCS}/compare.html", "w").write(build_compare(sc.get("comparison", {}), updated))
     open(f"{DOCS}/scoring.html", "w").write(build_scoring(tries, try_edges, tryinfo, sc, odds, updated))
-    open(f"{DOCS}/analysis.html", "w").write(build_analysis(analysis, updated))
+    open(f"{DOCS}/analysis.html", "w").write(
+        build_analysis(analysis, tryinfo, sc.get("kinfo", {}), updated))
     open(f"{DOCS}/backtest.html", "w").write(build_backtest(analysis, updated, tryinfo, sc))
     open(f"{DOCS}/lab.html", "w").write(build_lab(analysis, updated))
     open(f"{DOCS}/.nojekyll", "w").write("")  # serve files verbatim

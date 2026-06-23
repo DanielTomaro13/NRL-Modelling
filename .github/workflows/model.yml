@@ -71,6 +71,10 @@ jobs:
         run: python src/player_points.py price
         continue-on-error: true
 
+      - name: Build odds-comparison dashboard data
+        run: python src/compare.py
+        continue-on-error: true
+
       - name: Build site
         run: python src/build_site.py
 

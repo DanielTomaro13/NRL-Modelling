@@ -86,3 +86,35 @@ function drawCurve(mu,sd,line){
   '<text x="'+(ml+pw-4)+'" y="'+(mt+ph-6)+'" text-anchor="end" fill="#39d98a" font-size="11">over →</text></svg>';
  document.getElementById('lab-curve').innerHTML=svg;
 }
+
+// ---- Compare dashboard filters ----
+function cmpFilter(){
+ var tbl=document.getElementById('cmp'); if(!tbl)return;
+ var match=(document.getElementById('f-match')||{}).value||'all';
+ var market=(document.getElementById('f-market')||{}).value||'all';
+ var evonly=(document.getElementById('f-ev')||{}).checked;
+ var cred=(document.getElementById('f-cred')||{}).checked;
+ var shown=0;
+ tbl.querySelectorAll('tbody tr').forEach(function(tr){
+   var ok=true, ev=parseFloat(tr.dataset.ev);
+   if(match!=='all' && tr.dataset.match!==match) ok=false;
+   if(market!=='all' && tr.dataset.market!==market) ok=false;
+   if(evonly && !(ev>0)) ok=false;
+   if(cred && (!isNaN(ev) && (ev>40||ev<-95))) ok=false;  // hide implausible longshots
+   tr.style.display=ok?'':'none'; if(ok)shown++;
+ });
+ var c=document.getElementById('f-count'); if(c)c.textContent=shown+' markets';
+}
+// ---- Scoring match filter ----
+function scFilter(match){
+ document.querySelectorAll('section.match').forEach(function(s){
+   s.style.display=(match==='all'||s.dataset.match===match)?'':'none';});
+}
+// ---- Tabs (Scoring) ----
+function showTab(group,name){
+ document.querySelectorAll('[data-tabgroup="'+group+'"]').forEach(function(b){
+   b.classList.toggle('on', b.dataset.tab===name);});
+ document.querySelectorAll('[data-pane="'+group+'"]').forEach(function(p){
+   p.classList.toggle('on', p.dataset.paneName===name);});
+}
+document.addEventListener('DOMContentLoaded', function(){ if(document.getElementById('cmp')) cmpFilter(); });
