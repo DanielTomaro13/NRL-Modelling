@@ -211,23 +211,13 @@ def match_section(preds, odds, edges, match_rows, scoring=None):
                       f'<td class="sc">{s["exp_kicker_points"]:.1f}</td>')
         else:
             cells += '<td class="sc mut">–</td><td class="sc mut">–</td><td class="sc mut">–</td>'
-        # odds / edge chips
-        chips = []
-        pe = edges_for_pid(edges, pid)
-        for _, er in pe.iterrows():
-            chips.append(stat_badge(er))
-        tp = best_try_price(odds, pid)
-        if tp:
-            chips.append(f'<span class="try">TS ${tp["price"]:.2f} <i>{BOOK_ABBR.get(tp["book"], esc(tp["book"]))}</i></span>')
-        chip_html = " ".join(chips)
         body_rows.append(
             f'<tr><td class="pl"><b>{esc(p["name"])}</b><span class="pos">{esc(p["position"])}</span>'
-            f'<span class="tm">{esc(p["team"])}</span></td>{cells}'
-            f'<td class="ch">{chip_html}</td></tr>')
+            f'<span class="tm">{esc(p["team"])}</span></td>{cells}</tr>')
     return f"""<section class="match" data-match="{esc(title)}">
 <h3>{esc(title)} <span class="ko">{esc(kickoff)}</span></h3>
-<div class="tablewrap"><table>
-<thead><tr><th class="pl">Player</th>{head}<th>Odds / value</th></tr></thead>
+<div class="tablewrap scrolltable"><table>
+<thead><tr><th class="pl">Player</th>{head}</tr></thead>
 <tbody>{''.join(body_rows)}</tbody></table></div></section>"""
 
 
@@ -310,7 +300,7 @@ book's live price — Sportsbet, Ladbrokes, TAB, PointsBet and Dabble — best h
   <label class="chk"><input type="checkbox" id="f-cred" checked onchange="cmpFilter()"> hide longshots</label>
   <span class="count" id="f-count"></span>
 </div>
-<div class="tablewrap"><table id="cmp"><thead><tr>
+<div class="tablewrap scrolltable"><table id="cmp"><thead><tr>
 <th class="pl">Player</th><th>Market</th><th>Line</th><th>My price</th>
 {book_head}<th>Best EV</th></tr></thead>
 <tbody>{''.join(trs)}</tbody></table></div>
@@ -580,8 +570,8 @@ def _try_section(tries, odds):
                 f'<td class="mut">{fmt_odds_cell(p["p_anytime"])}</td>'
                 f'{book_cells(by_book, float(p["p_anytime"]))}</tr>')
         secs.append(f"""<section class="match" data-match="{esc(teams)}"><h3>{esc(teams)}</h3>
-<div class="tablewrap"><table><thead><tr><th class="pl">Player</th><th>Anytime</th>
-<th>Fair</th>{book_head}<th>Best EV</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div></section>""")
+<div class="tablewrap"><table><thead><tr><th class="pl">Player</th><th>Anytime %</th>
+<th>My price</th>{book_head}<th>Best EV</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div></section>""")
     return "".join(secs)
 
 
@@ -711,7 +701,7 @@ check the lineup. <a href="compare.html">Compare odds →</a></p>
     return page("Scoring & points", body, "scoring", updated)
 
 
-def build_lab(analysis, updated):
+def build_lab(analysis, updated, tryinfo=None):
     imp = analysis.get("importance", {})
     labels = analysis.get("target_label", {})
     imp_cards = []
@@ -722,6 +712,11 @@ def build_lab(analysis, updated):
         svg = C.hbars([(i["feature"], i["importance"]) for i in items],
                       color=C.ACC, value_fmt="{:.2f}", width=520, label_w=210)
         imp_cards.append(f'<div class="lcard"><h4>{esc(labels.get(t,t))}</h4>{svg}</div>')
+    try_imp = (tryinfo or {}).get("importance", [])[:8]
+    if try_imp:
+        svg = C.hbars([(i["feature"], i["importance"]) for i in try_imp],
+                      color=C.POS, value_fmt="{:.3f}", width=520, label_w=210)
+        imp_cards.append(f'<div class="lcard"><h4>Try scorer</h4>{svg}</div>')
     imp_html = "".join(imp_cards)
     body = f"""<div class="hero"><h1>Model Lab</h1>
 <p>Play with the exact maths the site uses to turn a projection into a price and an edge.
@@ -802,6 +797,8 @@ display:flex;justify-content:space-between;align-items:baseline;gap:10px}
 .match h3 .ko{color:var(--mut);font-weight:500;font-size:13px}
 .tablewrap{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:13.5px}
 th,td{padding:8px 10px;text-align:right;white-space:nowrap}
+.scrolltable{max-height:calc(100vh - 190px);overflow:auto;border:1px solid var(--line);border-radius:12px}
+.scrolltable thead th{position:sticky;top:0;z-index:3;background:#0f141c;box-shadow:0 1px 0 var(--line)}
 th{color:var(--mut);font-weight:600;border-bottom:1px solid var(--line);font-size:12px;text-transform:uppercase;letter-spacing:.03em}
 td{border-bottom:1px solid #1a2230}tr:last-child td{border-bottom:0}
 th.pl,td.pl{text-align:left}td.pl b{font-weight:600}
@@ -853,8 +850,8 @@ border:1px solid var(--line);border-radius:8px;padding:7px 9px;font-size:14px}
 .verdict.lose{background:#2a1414;color:#e0958f;border:1px solid #5a2b2b}
 .prose.panel{max-width:none}.prose.panel p{color:#c4d2de;margin:.5em 0}
 /* filters + tabs */
-.filters{position:sticky;top:58px;z-index:4;display:flex;flex-wrap:wrap;gap:12px;align-items:center;
-margin:6px 0 14px;padding:11px 14px;border:1px solid var(--line);border-radius:12px;background:rgba(20,26,36,.96);backdrop-filter:blur(8px)}
+.filters{display:flex;flex-wrap:wrap;gap:12px;align-items:center;
+margin:6px 0 14px;padding:11px 14px;border:1px solid var(--line);border-radius:12px;background:var(--card)}
 .filters label{color:var(--mut);font-size:13px;display:flex;align-items:center;gap:7px}
 .filters select{background:#0f141c;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:6px 9px;font-size:13.5px}
 .filters .chk{cursor:pointer}.filters .count{margin-left:auto;color:var(--mut);font-size:12.5px}
@@ -1010,7 +1007,7 @@ def main():
     open(f"{DOCS}/analysis.html", "w").write(
         build_analysis(analysis, tryinfo, sc.get("kinfo", {}), updated))
     open(f"{DOCS}/backtest.html", "w").write(build_backtest(analysis, updated, tryinfo, sc))
-    open(f"{DOCS}/lab.html", "w").write(build_lab(analysis, updated))
+    open(f"{DOCS}/lab.html", "w").write(build_lab(analysis, updated, tryinfo))
     open(f"{DOCS}/.nojekyll", "w").write("")  # serve files verbatim
     n_matches = preds["matchId"].nunique()
     print(f"Built {DOCS}/ — round {rnd}, {n_matches} matches, "

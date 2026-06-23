@@ -87,7 +87,8 @@ def main():
                 match, team = match_of(pid)
                 rows.append({"match": match, "player": pr.get("name"), "team": team,
                              "mkey": f"try_{kind}", "market": MARKET_LABEL[f"try_{kind}"],
-                             "line": None, "my_p": round(mp, 3),
+                             "line": {"anytime": 1, "2+": 2, "3+": 3}.get(kind),
+                             "my_p": round(mp, 3),
                              "my_fair": round(1 / mp, 2) if mp > 1e-9 else None,
                              "books": {b: round(v, 2) for b, v in books.items()},
                              "best_book": bk, "best": bp,

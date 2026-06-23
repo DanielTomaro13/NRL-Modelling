@@ -65,7 +65,7 @@ PLAYER_PROP_RE = re.compile(
 # Covers Ladbrokes ("Anytime/First Try Scorer") and Sportsbet ("1+ Try", "2+ Tries").
 TRYSCORER_RE = re.compile(
     r"^(anytime|first) try ?scorer$|^player to score (2\+|3\+) tries$"
-    r"|^\d\+\s*tr(y|ies)$", re.I)
+    r"|^\d\+\s*tr(y|ies)$|^to score 2 or more tries$|^to score a hat[\s-]?trick$", re.I)
 
 # Leading tokens that mean the title is a team/match market, not a player.
 NON_PLAYER_LEAD = {
@@ -85,7 +85,7 @@ def _try_kind(market_raw):
     mr = (market_raw or "").lower()
     if "first" in mr:
         return "first"
-    if "3+" in mr or "3 or more" in mr:
+    if "hat" in mr or "3+" in mr or "3 or more" in mr:
         return "3+"
     if "2+" in mr or "2 or more" in mr:
         return "2+"
@@ -666,8 +666,9 @@ def fetch_pointsbet():
 # ----------------------------------------------------------------------------- TAB
 TAB_BASE = "https://api.beta.tab.com.au/v1/tab-info-service"
 TAB_TOKEN_URL = "https://api.beta.tab.com.au/oauth/token"
-TAB_TRY = {"to score a try": "anytime", "1st try scorer": "first",
-           "last try scorer": "last", "to score a hat trick": "3+"}
+TAB_TRY = {"to score a try": "anytime", "to score 2+ tries": "2+",
+           "to score a hat trick": "3+", "1st try scorer": "first",
+           "last try scorer": "last"}
 
 
 def _tab_token():

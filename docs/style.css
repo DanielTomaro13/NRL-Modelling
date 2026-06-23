@@ -21,6 +21,8 @@ display:flex;justify-content:space-between;align-items:baseline;gap:10px}
 .match h3 .ko{color:var(--mut);font-weight:500;font-size:13px}
 .tablewrap{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:13.5px}
 th,td{padding:8px 10px;text-align:right;white-space:nowrap}
+.scrolltable{max-height:calc(100vh - 190px);overflow:auto;border:1px solid var(--line);border-radius:12px}
+.scrolltable thead th{position:sticky;top:0;z-index:3;background:#0f141c;box-shadow:0 1px 0 var(--line)}
 th{color:var(--mut);font-weight:600;border-bottom:1px solid var(--line);font-size:12px;text-transform:uppercase;letter-spacing:.03em}
 td{border-bottom:1px solid #1a2230}tr:last-child td{border-bottom:0}
 th.pl,td.pl{text-align:left}td.pl b{font-weight:600}
@@ -72,8 +74,8 @@ border:1px solid var(--line);border-radius:8px;padding:7px 9px;font-size:14px}
 .verdict.lose{background:#2a1414;color:#e0958f;border:1px solid #5a2b2b}
 .prose.panel{max-width:none}.prose.panel p{color:#c4d2de;margin:.5em 0}
 /* filters + tabs */
-.filters{position:sticky;top:58px;z-index:4;display:flex;flex-wrap:wrap;gap:12px;align-items:center;
-margin:6px 0 14px;padding:11px 14px;border:1px solid var(--line);border-radius:12px;background:rgba(20,26,36,.96);backdrop-filter:blur(8px)}
+.filters{display:flex;flex-wrap:wrap;gap:12px;align-items:center;
+margin:6px 0 14px;padding:11px 14px;border:1px solid var(--line);border-radius:12px;background:var(--card)}
 .filters label{color:var(--mut);font-size:13px;display:flex;align-items:center;gap:7px}
 .filters select{background:#0f141c;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:6px 9px;font-size:13.5px}
 .filters .chk{cursor:pointer}.filters .count{margin-left:auto;color:var(--mut);font-size:12.5px}

@@ -197,6 +197,27 @@ def main():
     joblib.dump({"model": final, "features": feats}, MODEL)
     print(f"  saved {MODEL}")
 
+    # permutation feature importance (for the Model Lab)
+    importance = []
+    try:
+        from sklearn.inspection import permutation_importance
+        te = df[df.season.isin(HOLDOUTS)].sample(min(1500, int((df.season.isin(HOLDOUTS)).sum())),
+                                                 random_state=0)
+        r = permutation_importance(final, prep_X(te, feats), te["tries"].values,
+                                   n_repeats=4, random_state=0,
+                                   scoring="neg_mean_absolute_error")
+        cols = feats + ["position"]
+        for i in np.argsort(r.importances_mean)[::-1][:10]:
+            if r.importances_mean[i] > 0:
+                f = cols[i]
+                for a, b in [("_r5", " (5-game)"), ("_r3", " (3-game)"), ("_r10", " (10-game)"),
+                             ("_career", " (career)"), ("opp_", "opp def: "), ("own_", "team: "),
+                             ("Allowed", " conceded"), ("_", " ")]:
+                    f = f.replace(a, b)
+                importance.append({"feature": f.strip(), "importance": round(float(r.importances_mean[i]), 3)})
+    except Exception as e:
+        print("  importance skipped:", repr(e))
+
     # season leaders by model expected tries (this season actuals for context)
     cur = pm[pm.season == int(pm.season.max())].copy()
     nm = name_map()
@@ -210,7 +231,7 @@ def main():
                 "per_game": float(r["per_game"])} for _, r in leaders.iterrows() if r["name"]]
 
     payload = {"generated": pd.Timestamp.now('UTC').isoformat(), "backtest": bt,
-               "leaders": leaders, "season": int(pm.season.max())}
+               "leaders": leaders, "importance": importance, "season": int(pm.season.max())}
 
     if cmd != "backtest":
         out, rnd = predict_round(df, feats, final)
