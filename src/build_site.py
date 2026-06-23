@@ -191,19 +191,26 @@ def stat_badge(edge_row):
             f'{esc(stat)} {esc(side)} {line} @ {price} <b>{ev_txt}</b></span>')
 
 
-def match_section(preds, odds, edges, match_rows):
+def match_section(preds, odds, edges, match_rows, scoring=None):
     home_pid_rows = match_rows.sort_values("pred_perf_points", ascending=False)
     teams = match_rows[["team", "opp", "isHome"]].drop_duplicates()
     title = match_rows.iloc[0]["team"] + " vs " + match_rows.iloc[0]["opp"]
     kickoff = fmt_dt(match_rows.iloc[0].get("utcStartTime"))
+    scoring = scoring or {}
 
     head = "".join(f"<th>{lbl}</th>" for _, lbl in STAT_COLS)
+    head += '<th class="sc">Tries</th><th class="sc">Points</th><th class="sc">Kicker</th>'
     body_rows = []
     for _, p in home_pid_rows.iterrows():
         pid = p["playerId"]
-        cells = "".join(
-            f'<td>{p[f"pred_{c}"]:.0f}</td>' if c != "runMetres" else f'<td>{p[f"pred_{c}"]:.0f}</td>'
-            for c, _ in STAT_COLS)
+        cells = "".join(f'<td>{p[f"pred_{c}"]:.0f}</td>' for c, _ in STAT_COLS)
+        s = scoring.get(pid)
+        if s:
+            cells += (f'<td class="sc">{s["exp_tries"]:.2f}</td>'
+                      f'<td class="sc"><b>{s["exp_points"]:.1f}</b></td>'
+                      f'<td class="sc">{s["exp_kicker_points"]:.1f}</td>')
+        else:
+            cells += '<td class="sc mut">–</td><td class="sc mut">–</td><td class="sc mut">–</td>'
         # odds / edge chips
         chips = []
         pe = edges_for_pid(edges, pid)
@@ -224,23 +231,31 @@ def match_section(preds, odds, edges, match_rows):
 <tbody>{''.join(body_rows)}</tbody></table></div></section>"""
 
 
-def build_index(preds, odds, edges, rnd, updated):
-    # value summary banner
+def build_index(preds, odds, edges, rnd, updated, ppoints=None):
     n_odds = int((odds.get("playerId").notna().sum())) if (len(odds) and "playerId" in odds) else 0
     banner = (f'<a class="banner pos" href="compare.html">Compare every market against '
-              f'Sportsbet, Ladbrokes &amp; Dabble on the odds dashboard &rarr;</a>' if n_odds else
+              f'Sportsbet, Ladbrokes, TAB, PointsBet &amp; Dabble on the odds dashboard &rarr;</a>'
+              if n_odds else
               '<div class="banner">Player prop odds open ~1–2 days before kickoff; '
               'odds &amp; value populate automatically.</div>')
 
+    # scoring projections (expected tries / points / kicker points) by playerId
+    scoring = {}
+    if ppoints is not None and not ppoints.empty:
+        for _, r in ppoints.iterrows():
+            scoring[r["playerId"]] = {"exp_tries": float(r["exp_tries"]),
+                                      "exp_points": float(r["exp_points"]),
+                                      "exp_kicker_points": float(r["exp_kicker_points"])}
+
     secs, match_labels = [], []
     for mid, g in preds.groupby("matchId"):
-        secs.append(match_section(preds, odds, edges, g))
+        secs.append(match_section(preds, odds, edges, g, scoring))
         match_labels.append(g.iloc[0]["team"] + " vs " + g.iloc[0]["opp"])
     match_opts = "".join(f'<option value="{esc(m)}">{esc(m)}</option>' for m in match_labels)
     body = f"""<div class="hero"><h1>Round {rnd} player projections</h1>
-<p>Six per-player quantities for every named NRL player — hit-ups, runs, run metres,
-post-contact metres, tackles and performance points — from a leakage-safe gradient-boosting
-model, with live bookmaker odds and model-vs-market value.</p></div>
+<p>Per-player projections for every named NRL player — hit-ups, runs, run metres, post-contact
+metres, tackles, performance points, plus expected tries, total points and goal-kicking points —
+from leakage-safe models, with live bookmaker odds and model-vs-market value.</p></div>
 {banner}
 <div class="filters"><label>Jump to match <select onchange="scFilter(this.value)">
 <option value="all">All matches</option>{match_opts}</select></label></div>
@@ -793,6 +808,7 @@ th.pl,td.pl{text-align:left}td.pl b{font-weight:600}
 td.pl .pos{color:var(--mut);margin-left:8px;font-size:12px}
 td.pl .tm{display:block;color:var(--mut);font-size:11px}
 td.ch{text-align:left;white-space:normal}
+th.sc,td.sc{background:#101722;border-left:1px solid #243042}th.sc:first-of-type,td.sc:first-of-type{border-left:1px solid var(--line)}
 .edge{display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;border-radius:7px;background:var(--chip);
 font-size:12px;color:var(--mut)}.edge.pos{background:var(--posbg);color:var(--pos)}
 .edge b{color:inherit}.try{display:inline-block;padding:2px 7px;border-radius:7px;background:var(--chip);
@@ -987,7 +1003,8 @@ def main():
     os.makedirs(f"{DOCS}/data", exist_ok=True)
     open(f"{DOCS}/style.css", "w").write(CSS)
     open(f"{DOCS}/app.js", "w").write(APP_JS)
-    open(f"{DOCS}/index.html", "w").write(build_index(preds, odds, edges, rnd, updated))
+    open(f"{DOCS}/index.html", "w").write(
+        build_index(preds, odds, edges, rnd, updated, sc.get("ppoints")))
     open(f"{DOCS}/compare.html", "w").write(build_compare(sc.get("comparison", {}), updated))
     open(f"{DOCS}/scoring.html", "w").write(build_scoring(tries, try_edges, tryinfo, sc, odds, updated))
     open(f"{DOCS}/analysis.html", "w").write(

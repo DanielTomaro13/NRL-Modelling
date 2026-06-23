@@ -130,7 +130,8 @@ def main():
                      "ev": round((mp * bp - 1) * 100, 1) if bp else None})
 
     rows = [r for r in rows if r["player"]]
-    rows.sort(key=lambda r: (r["ev"] if r["ev"] is not None else -999), reverse=True)
+    # shortest odds (best available price) first, longest last; priceless rows last
+    rows.sort(key=lambda r: (r["best"] is None, r["best"] if r["best"] is not None else 9e9))
     out = {"generated": pd.Timestamp.now("UTC").isoformat(),
            "markets": sorted(set(r["market"] for r in rows)),
            "matches": sorted(set(r["match"] for r in rows if r["match"])),

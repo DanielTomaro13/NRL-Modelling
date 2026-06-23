@@ -27,6 +27,7 @@ th.pl,td.pl{text-align:left}td.pl b{font-weight:600}
 td.pl .pos{color:var(--mut);margin-left:8px;font-size:12px}
 td.pl .tm{display:block;color:var(--mut);font-size:11px}
 td.ch{text-align:left;white-space:normal}
+th.sc,td.sc{background:#101722;border-left:1px solid #243042}th.sc:first-of-type,td.sc:first-of-type{border-left:1px solid var(--line)}
 .edge{display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;border-radius:7px;background:var(--chip);
 font-size:12px;color:var(--mut)}.edge.pos{background:var(--posbg);color:var(--pos)}
 .edge b{color:inherit}.try{display:inline-block;padding:2px 7px;border-radius:7px;background:var(--chip);
