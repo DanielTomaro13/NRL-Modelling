@@ -404,6 +404,11 @@ DAB = "https://api.dabble.com.au"
 
 
 def _dab_session():
+    """Build a Dabble HTTP session. Supply the iOS app's captured auth via env:
+      DABBLE_AUTH    -> Authorization header value (e.g. "Bearer eyJ...")
+      DABBLE_COOKIE  -> Cookie header (e.g. cf_clearance=...)
+      DABBLE_HEADERS -> JSON object of any extra headers Charles shows
+    (capture them from the Dabble iOS app with Charles proxy — see README)."""
     try:
         from curl_cffi import requests as creq
     except Exception:
@@ -412,9 +417,16 @@ def _dab_session():
     import os
     headers = {"Accept": "application/json", "Origin": "https://dabble.com.au",
                "Referer": "https://dabble.com.au/"}
-    cookie = os.environ.get("DABBLE_COOKIE", "").strip()
-    if cookie:
-        headers["Cookie"] = cookie
+    if os.environ.get("DABBLE_AUTH", "").strip():
+        headers["Authorization"] = os.environ["DABBLE_AUTH"].strip()
+    if os.environ.get("DABBLE_COOKIE", "").strip():
+        headers["Cookie"] = os.environ["DABBLE_COOKIE"].strip()
+    extra = os.environ.get("DABBLE_HEADERS", "").strip()
+    if extra:
+        try:
+            headers.update(json.loads(extra))
+        except Exception as e:
+            print("  [dabble] bad DABBLE_HEADERS json:", e)
     return creq, headers
 
 
