@@ -82,6 +82,10 @@ jobs:
         run: python src/compare.py
         continue-on-error: true
 
+      - name: Export JSON bundle for nrl24-0.com
+        run: python src/export_site_data.py
+        continue-on-error: true
+
       - name: Build site
         run: python src/build_site.py
 
