@@ -53,6 +53,10 @@ def build_predictions():
     p = (pdf[["playerId", "exp_points", "exp_kicker_points"]]
          if len(pdf) else pd.DataFrame(columns=["playerId"]))
     df = t.merge(p, on="playerId", how="outer") if len(t) else pdf
+    # expected performance (fantasy) points from the round predictions
+    rdf = _load("reports/round_predictions.parquet")
+    if len(rdf) and "pred_perf_points" in rdf:
+        df = df.merge(rdf[["playerId", "pred_perf_points"]], on="playerId", how="left")
     matches = []
     for mid, g in df.groupby("matchId"):
         g0 = g.iloc[0]
@@ -65,6 +69,7 @@ def build_predictions():
                 "exp_tries": _round(r.get("exp_tries"), 2),
                 "exp_points": _round(r.get("exp_points"), 1),
                 "exp_kicker": _round(r.get("exp_kicker_points"), 1),
+                "exp_perf": _round(r.get("pred_perf_points"), 1),
             })
         matches.append({"matchId": str(mid), "team": g0.get("team"), "opp": g0.get("opp"),
                         "event": f'{g0.get("team")} vs {g0.get("opp")}', "players": players})
