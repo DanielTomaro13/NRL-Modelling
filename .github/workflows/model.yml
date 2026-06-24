@@ -101,3 +101,15 @@ jobs:
             git pull --rebase --autostash origin main || true
             git push
           fi
+
+      - name: Trigger nrl24-0.com redeploy (fresh model data)
+        if: ${{ env.NRL240_DISPATCH_TOKEN != '' }}
+        env:
+          NRL240_DISPATCH_TOKEN: ${{ secrets.NRL240_DISPATCH_TOKEN }}
+        run: |
+          curl -sf -X POST \
+            -H "Authorization: Bearer $NRL240_DISPATCH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/DanielTomaro13/NRL-24-0/dispatches \
+            -d '{"event_type":"model-data-updated"}' \
+            && echo "Dispatched model-data-updated to NRL-24-0" || echo "Dispatch skipped/failed"
