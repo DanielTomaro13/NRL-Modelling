@@ -129,6 +129,48 @@ def backtest():
 
 
 # --------------------------------------------------------------------------- predict round
+def anchor_goalkickers(m, match_path="data/processed/player_match.parquet",
+                       window=10, min_kick_games=2, rate_cap=5.5):
+    """Concentrate goals on each team's CURRENT primary kicker.
+
+    The per-player goal model lags when kicking duty changes hands (a player who
+    just took over the tee has a diluted rolling average, so he's under-rated, while
+    a back-up who kicked a few keeps a stray goal rate). Fix it with the team list +
+    recent form: within each named lineup, the kicker is whoever has kicked the most
+    over the team's last `window` games; give him his rate in games he actually kicked
+    (so a kicker returning from injury isn't dragged to zero by missed games) and zero
+    everyone else. Falls back to the model's lg if no clear kicker.
+    """
+    try:
+        pm = pd.read_parquet(match_path, columns=["playerId", "season", "roundNumber",
+                                                  "conversions", "penaltyGoals"])
+    except Exception:
+        return m  # no history available — leave the model's goal rates as-is
+    pm["goals"] = pm["conversions"].fillna(0) + pm["penaltyGoals"].fillna(0)
+    pm["order"] = pm["season"] * 100 + pm["roundNumber"].fillna(0)
+    recent = pm.sort_values("order").groupby("playerId").tail(window)
+    kicked = recent[recent["goals"] > 0]
+    tot = recent.groupby("playerId")["goals"].sum()
+    kick_games = kicked.groupby("playerId")["goals"].size()
+    kick_rate = kicked.groupby("playerId")["goals"].mean()   # goals per *kicking* game
+
+    m = m.copy()
+    m["_tot"] = m["playerId"].map(tot).fillna(0.0)
+    m["_kg"] = m["playerId"].map(kick_games).fillna(0).astype(int)
+    m["_rate"] = m["playerId"].map(kick_rate).fillna(0.0).clip(upper=rate_cap)
+
+    grp = "matchId" if "matchId" in m.columns else "opp"
+    m["lg_model"] = m["lg"]
+    m["lg"] = m["lg"].clip(upper=0.05)          # default: ~no goals for non-kickers
+    for _, idx in m.groupby([grp, "team"]).groups.items():
+        sub = m.loc[idx]
+        top = sub["_tot"].idxmax()              # most goals over the window = the kicker
+        if sub.loc[top, "_kg"] >= min_kick_games:
+            m.loc[top, "lg"] = max(float(sub.loc[top, "_rate"]),
+                                   float(sub.loc[top, "lg_model"]))
+    return m.drop(columns=["_tot", "_kg", "_rate", "lg_model"])
+
+
 def predict_round():
     try:
         tdf = pd.read_parquet("reports/tryscorer_predictions.parquet")
@@ -142,6 +184,7 @@ def predict_round():
     t = tdf.rename(columns={"lambda": "lt"})[tcols]
     k = kdf.rename(columns={"lambda_goals": "lg", "lambda_fg": "lfg"})[["playerId", "lg", "lfg"]]
     m = t.merge(k, on="playerId", how="left").fillna({"lg": 0.0, "lfg": 0.0})
+    m = anchor_goalkickers(m)
     m["exp_points"] = expected_points(m["lt"], m["lg"], m["lfg"])
     m["exp_tries"] = m["lt"]
     m["exp_kicker_points"] = 2 * m["lg"] + m["lfg"]
