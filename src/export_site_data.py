@@ -101,6 +101,56 @@ def build_scoring():
     return {"points": points, "tries": tries}
 
 
+def build_lineups():
+    """Confirmed team lists per match, with the designated goal kicker flagged."""
+    import glob
+    files = sorted(glob.glob("data/processed/lineups_r*.parquet"))
+    if not files:
+        return {"matches": []}
+    lu = pd.read_parquet(files[-1])   # latest round's confirmed lists
+    pp = _load("reports/player_points_predictions.parquet")
+    team_of, lg_of = {}, {}
+    if len(pp):
+        team_of = dict(zip(pp["playerId"], pp["team"]))
+        lg_of = dict(zip(pp["playerId"], pp["lg"]))
+    # kicker per (matchId, squadId) = highest goal rate (>1) in that squad
+    kicker_pid = {}
+    for (mid, sid), g in lu.groupby(["matchId", "squadId"]):
+        cand = [(lg_of.get(p, 0.0), p) for p in g["playerId"]]
+        best = max(cand, default=(0, None))
+        if best[0] > 1.0:
+            kicker_pid[(mid, sid)] = best[1]
+
+    def team_name(g):
+        names = [team_of.get(p) for p in g["playerId"] if team_of.get(p)]
+        return max(set(names), key=names.count) if names else None
+
+    def players(g, mid, sid):
+        out = []
+        for _, r in g.sort_values("jumperNumber").iterrows():
+            out.append({
+                "playerId": int(r["playerId"]) if pd.notna(r.get("playerId")) else None,
+                "name": r.get("name"), "position": r.get("position"),
+                "jumper": int(r["jumperNumber"]) if pd.notna(r.get("jumperNumber")) else None,
+                "kicker": kicker_pid.get((mid, sid)) == r.get("playerId"),
+            })
+        return out
+
+    matches = []
+    for mid, mg in lu.groupby("matchId"):
+        sides = {}
+        for sid, g in mg.groupby("squadId"):
+            home = bool(g["isHome"].iloc[0])
+            sides["home" if home else "away"] = {"team": team_name(g),
+                                                 "players": players(g, mid, sid)}
+        if "home" in sides and "away" in sides:
+            matches.append({"matchId": str(mid),
+                            "event": f'{sides["home"]["team"]} vs {sides["away"]["team"]}',
+                            **sides})
+    matches.sort(key=lambda m: m["event"])
+    return {"matches": matches}
+
+
 def _read_json(path):
     try:
         return json.load(open(path))
@@ -161,6 +211,7 @@ def main():
     json.dump(build_predictions(), open(f"{OUT}/predictions.json", "w"))
     json.dump(build_scoring(), open(f"{OUT}/scoring.json", "w"))
     json.dump(build_backtest(), open(f"{OUT}/backtest.json", "w"))
+    json.dump(build_lineups(), open(f"{OUT}/lineups.json", "w"))
 
     # reuse the rich JSON already produced by compare.py / pickem.py verbatim
     for name in ("comparison", "pickem"):
