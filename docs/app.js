@@ -124,32 +124,69 @@ function cmpRestore(){
    if(v){ inp.value=v; cmpManual(inp); }
  });
 }
-// ---- Pick'em filter + parlay builder ----
+// ---- Pick'em: client-side model maths (mirrors pricing.py / player_points.py) ----
+function _erf(x){var s=x<0?-1:1;x=Math.abs(x);var t=1/(1+0.3275911*x);
+ var y=1-(((((1.061405429*t-1.453152027)*t)+1.421413741)*t-0.284496736)*t+0.254829592)*t*Math.exp(-x*x);
+ return s*y;}
+function _ncdf(z){return 0.5*(1+_erf(z/Math.SQRT2));}
+function _poisPmf(lam,k){var p=Math.exp(-lam);for(var i=1;i<=k;i++)p*=lam/i;return p;}
+function _poisTail(lam,line){var fl=Math.floor(line),s=0;for(var k=0;k<=fl;k++)s+=_poisPmf(lam,k);return 1-s;}
+function _pointsPover(lt,lg,lfg,line){ // 4*Pois(lt)+2*Pois(lg)+Pois(lfg), kmax 8/14/4
+ var T=[],G=[],F=[],i;lt=Math.max(lt,1e-9);lg=Math.max(lg,1e-9);lfg=Math.max(lfg,1e-9);
+ for(i=0;i<=8;i++)T.push(_poisPmf(lt,i));for(i=0;i<=14;i++)G.push(_poisPmf(lg,i));for(i=0;i<=4;i++)F.push(_poisPmf(lfg,i));
+ var s=0;for(var ti=0;ti<T.length;ti++)for(var gi=0;gi<G.length;gi++){var base=4*ti+2*gi,ptg=T[ti]*G[gi];
+   for(var fi=0;fi<F.length;fi++){if(base+fi>line)s+=ptg*F[fi];}}
+ return s;}
+function _normOver(mu,sg,line){sg=Math.max(sg,1e-6);var f=Math.round((line-Math.floor(line))*1e4)/1e4;
+ if(f===0.25||f===0.75)return (_normOver(mu,sg,line-0.25)+_normOver(mu,sg,line+0.25))/2;
+ if(Math.abs(f-0.5)<1e-6)return 1-_ncdf((line-mu)/sg);
+ return 1-_ncdf((line+0.5-mu)/sg);} // integer line: push band, p_over = 1-cdf(line+0.5)
+function pkPover(d,line){ if(!d||isNaN(line))return null;
+ if(d.k==='pois')return _poisTail(d.lam,line);
+ if(d.k==='conv')return _pointsPover(d.lt,d.lg,d.lfg,line);
+ if(d.k==='norm')return _normOver(d.mu,d.sg,line); return null;}
+function _fair(p){return (p&&p>1e-9)?('$'+(1/p).toFixed(2)):'$–';}
+function pkCompute(tr){
+ var d; try{d=JSON.parse(tr.dataset.dist);}catch(e){return;}
+ var line=parseFloat(tr.querySelector('input.lnin').value);
+ var ov=tr.querySelector('.pko'), un=tr.querySelector('.pku');
+ var po=pkPover(d,line);
+ if(po===null){ov.innerHTML='';un.innerHTML='';tr.dataset.p=0;return;}
+ po=Math.min(Math.max(po,0),1);var pu=1-po;
+ tr.dataset.po=po;tr.dataset.line=line;tr.dataset.p=Math.max(po,pu);
+ ov.className='pko'+(po>=0.6?' pos':'');un.className='pku'+(pu>=0.6?' pos':'');
+ ov.innerHTML='<b>'+(po*100).toFixed(0)+'%</b> <span class="mut">'+_fair(po)+'</span> <button class="addleg" data-sd="over" onclick="pkAdd(this)">+</button>';
+ un.innerHTML='<b>'+(pu*100).toFixed(0)+'%</b> <span class="mut">'+_fair(pu)+'</span> <button class="addleg" data-sd="under" onclick="pkAdd(this)">+</button>';
+}
+function pkComputeAll(){ var t=document.getElementById('pkm'); if(t)t.querySelectorAll('tbody tr').forEach(pkCompute); }
 function pkFilter(){
  var tbl=document.getElementById('pkm'); if(!tbl)return;
+ var match=(document.getElementById('pk-match')||{}).value||'all';
  var stat=(document.getElementById('pk-stat')||{}).value||'all';
  var strong=(document.getElementById('pk-strong')||{}).checked;
  var n=0;
  tbl.querySelectorAll('tbody tr').forEach(function(tr){
    var ok=true, p=parseFloat(tr.dataset.p);
+   if(match!=='all' && tr.dataset.match!==match) ok=false;
    if(stat!=='all' && tr.dataset.stat!==stat) ok=false;
-   if(strong && !(p>=0.55)) ok=false;
+   if(strong && !(p>=0.6)) ok=false;
    tr.style.display=ok?'':'none'; if(ok)n++;
  });
- var c=document.getElementById('pk-count'); if(c)c.textContent=n+' legs';
+ var c=document.getElementById('pk-count'); if(c)c.textContent=n+' rows';
 }
 var PK_SLIP=[];
-function addLeg(btn){
- var leg=JSON.parse(btn.dataset.leg);
- if(PK_SLIP.find(function(l){return l.pl===leg.pl&&l.st===leg.st&&l.ln===leg.ln;}))return; // one side per line
- PK_SLIP.push(leg); btn.textContent='✓'; btn.disabled=true; renderSlip();
+function pkAdd(btn){
+ var tr=btn.closest('tr'); if(!tr.dataset.po) pkCompute(tr);
+ var side=btn.dataset.sd, po=parseFloat(tr.dataset.po);
+ if(isNaN(po))return;
+ var p=side==='over'?po:1-po, ln=parseFloat(tr.dataset.line);
+ var pl=tr.dataset.pl, st=tr.dataset.stat;
+ if(PK_SLIP.find(function(l){return l.pl===pl&&l.st===st&&l.ln===ln&&l.sd===side;}))return;
+ PK_SLIP.push({pl:pl,st:st,ln:ln,sd:side,p:p,btn:btn});
+ btn.textContent='✓'; btn.disabled=true; renderSlip();
 }
-function rmLeg(i){ PK_SLIP.splice(i,1); renderSlip(); resetAddBtns(); }
-function clearSlip(){ PK_SLIP=[]; renderSlip(); resetAddBtns(); }
-function resetAddBtns(){ document.querySelectorAll('.addleg').forEach(function(b){
- var leg=JSON.parse(b.dataset.leg);
- var inSlip=PK_SLIP.find(function(l){return l.pl===leg.pl&&l.st===leg.st&&l.ln===leg.ln&&l.sd===leg.sd;});
- b.textContent=inSlip?'✓':'+'; b.disabled=!!inSlip; }); }
+function rmLeg(i){ var l=PK_SLIP[i]; if(l&&l.btn){l.btn.textContent='+';l.btn.disabled=false;} PK_SLIP.splice(i,1); renderSlip(); }
+function clearSlip(){ PK_SLIP.forEach(function(l){if(l.btn){l.btn.textContent='+';l.btn.disabled=false;}}); PK_SLIP=[]; renderSlip(); }
 function renderSlip(){
  var el=document.getElementById('slip'); if(!el)return;
  if(!PK_SLIP.length){el.className='slip';el.textContent='Slip empty — add legs to build a parlay.';return;}
@@ -176,5 +213,5 @@ function showTab(group,name){
 }
 document.addEventListener('DOMContentLoaded', function(){
  if(document.getElementById('cmp')){ cmpFilter(); cmpRestore(); }
- if(document.getElementById('pkm')) pkFilter();
+ if(document.getElementById('pkm')){ pkComputeAll(); pkFilter(); }
 });

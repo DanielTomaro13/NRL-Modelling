@@ -1,126 +1,135 @@
 """
-Dabble Pick'em — model vs line.
+Dabble Pick'em — model vs line, with manual line entry.
 
 Pick'em is a multiplier/parlay product, not a priced two-way market: you pick players
 to go over/under a line, min 2 legs, fixed multipliers (2 legs x3.2, 3 x6.5, 4 x12,
-5 x25). There's no single-bet price to de-vig, so instead we treat Dabble's line as
-their projection and let the model judge it:
+5 x25). There's no single-bet price to de-vig, so the model judges the *line* instead.
 
-  - model projection of the stat
-  - P(over the line) / P(under)   (from the same calibrated models the site uses)
-  - model fair odds (1 / P) and a lean
+Dabble is iOS-only, so we often can't pull its lines automatically. To stay useful, this
+emits a MODEL ROW for every projected player across the Pick'em stat set, each carrying the
+model's distribution parameters. The site computes P(over) for whatever line you type in —
+prefilled with Dabble's posted line when we do have it. So you can paste a line off your
+phone and get the model's read (P over/under, fair odds, lean) with zero scraping.
 
-A parlay is +EV when  multiplier_N * product(P(your side)) > 1, so pick the legs where
-the model most strongly beats Dabble's line.
+  - tries:  Poisson(lambda)                              -> {"k":"pois","lam":..}
+  - points: 4*Pois(lt) + 2*Pois(lg) + Pois(lfg) (convol) -> {"k":"conv","lt":..,"lg":..,"lfg":..}
+  - perf points / tackles / run metres: Normal(mu, sigma)-> {"k":"norm","mu":..,"sg":..}
 
 Output: reports/pickem.json   CLI: python src/pickem.py
 """
-import json, math
+import json
 import numpy as np
 import pandas as pd
-from scipy.stats import poisson
 
 import pricing as PRC
-import player_points as PP
 
+# stat key -> (display label, which Normal target in dispersion, prediction column)
 STAT_LABEL = {"points": "Player Points", "tries": "Tries",
               "performance_points": "Performance Points", "tackles": "Tackles",
-              "run_metres": "Run Metres", "tackle_breaks": "Tackle Breaks",
-              "kicker_points": "Kicker Points"}
+              "run_metres": "Run Metres"}
+# Normal-distributed stats we can model from round_predictions + dispersion
+NORM_STATS = {"performance_points": ("perf_points", "pred_perf_points"),
+              "tackles": ("tackles", "pred_tackles"),
+              "run_metres": ("runMetres", "pred_runMetres")}
+# only surface a row when the projection is meaningful (keeps the board navigable)
+MIN_PROJ = {"tries": 0.06, "points": 1.0, "performance_points": 6.0,
+            "tackles": 5.0, "run_metres": 25.0}
 MULTIPLIERS = {2: 3.2, 3: 6.5, 4: 12.0, 5: 25.0}   # Dabble Power Play (1 leg not allowed)
 
 
-def _p_over(stat, line, tries_row, pts_row, rp_row, disp):
-    """Model P(actual > line) for a Pick'em stat."""
-    if stat == "tries" and tries_row is not None:
-        lam = float(tries_row["lambda"])
-        return float(1 - poisson.cdf(math.floor(line), lam))    # P(tries >= floor+1)
-    if stat == "points" and pts_row is not None:
-        pmf = PP.points_pmf(float(pts_row["lt"]), float(pts_row["lg"]), float(pts_row["lfg"]))
-        return float(sum(p for v, p in pmf.items() if v > line))
-    target = PRC.STAT_TO_TARGET.get(stat)               # perf_points / tackles / runMetres…
-    if target and rp_row is not None and f"pred_{target}" in rp_row:
-        mu = float(rp_row[f"pred_{target}"])
-        sigma = PRC.sigma_for(target, mu, disp)
-        return float(PRC.over_under_probs(mu, sigma, float(line))[0])
-    return None
+def _suggest_line(stat, proj):
+    """A sensible default line to prefill (near the projection, half-point so no push)."""
+    if stat == "tries":
+        return 0.5
+    return max(0.5, round(proj) - 0.5)
 
 
-def _proj(stat, tries_row, pts_row, rp_row):
-    if stat == "tries" and tries_row is not None:
-        return round(float(tries_row["lambda"]), 2)
-    if stat == "points" and pts_row is not None:
-        return round(PP.expected_points(float(pts_row["lt"]), float(pts_row["lg"]),
-                                        float(pts_row["lfg"])), 1)
-    target = PRC.STAT_TO_TARGET.get(stat)
-    if target and rp_row is not None and f"pred_{target}" in rp_row:
-        return round(float(rp_row[f"pred_{target}"]), 1)
-    return None
+def _dabble_lines():
+    """Map (playerId, stat) -> {'line': x, 'offered': [sides]} from any live Dabble Pick'em."""
+    try:
+        od = pd.read_parquet("reports/odds_snapshot.parquet")
+    except Exception:
+        return {}
+    if "category" not in od:
+        return {}
+    pk = od[(od["category"] == "pickem") & od["playerId"].notna()]
+    out = {}
+    for (pid, stat), g in pk.groupby(["playerId", "stat"]):
+        line = float(g["line"].mode().iloc[0]) if g["line"].notna().any() else None
+        sides = sorted(set((k or "over").lower() for k in g.get("kind", [])))
+        out[(pid, stat)] = {"line": line, "offered": sides}
+    return out
 
 
 def main():
-    od = pd.read_parquet("reports/odds_snapshot.parquet")
-    pk = od[(od.get("category") == "pickem") & od.playerId.notna()] if "category" in od else od.iloc[:0]
     disp = PRC.load_dispersion() or {}
     tdf = _load("reports/tryscorer_predictions.parquet")
     pdf = _load("reports/player_points_predictions.parquet")
     rdf = _load("reports/round_predictions.parquet")
+    dab = _dabble_lines()
+
+    # base identity (name/team/opp/matchId) keyed by playerId, from whichever file has it
+    info = {}
+    for df in (pdf, tdf, rdf):
+        if not len(df):
+            continue
+        for _, r in df.iterrows():
+            pid = r.get("playerId")
+            if pid is None or pid in info:
+                continue
+            opp = r.get("opp")
+            info[pid] = {"player": r.get("name"), "team": r.get("team"),
+                         "matchId": r.get("matchId"),
+                         "event": f'{r.get("team")} vs {opp}' if opp else r.get("team")}
+
     ti = tdf.set_index("playerId") if len(tdf) else tdf
     pi = pdf.set_index("playerId") if len(pdf) else pdf
     ri = rdf.set_index("playerId") if len(rdf) else rdf
 
-    # one row per (player, stat, line) carrying BOTH over and under + the sides Dabble offers
-    groups = {}
-    for _, r in pk.iterrows():
-        key = (r["playerId"], r["stat"], float(r["line"]))
-        g = groups.setdefault(key, {"player": r["player"], "event": r.get("event_name"),
-                                    "sides": set()})
-        g["sides"].add((r.get("kind") or "over").lower())
     rows = []
-    for (pid, stat, line), g in groups.items():
-        tr = _one(ti.loc[pid]) if (len(ti) and pid in ti.index) else None
-        pr = _one(pi.loc[pid]) if (len(pi) and pid in pi.index) else None
-        rr = _one(ri.loc[pid]) if (len(ri) and pid in ri.index) else None
-        p_over = _p_over(stat, line, tr, pr, rr, disp)
-        if p_over is None:
-            continue
-        # drop near-certain lines (e.g. 3+ tries for a winger, a forward's points under) —
-        # they aren't real Pick'em decisions and just clutter the board / inflate parlays.
-        if p_over < 0.07 or p_over > 0.93:
-            continue
-        p_under = 1 - p_over
-        proj = _proj(stat, tr, pr, rr)
-        team = None
-        for src in (pr, tr, rr):
-            if src is not None and src.get("team"):
-                team = src.get("team"); break
-        rows.append({"player": g["player"], "team": team, "stat": stat,
-                     "stat_label": STAT_LABEL.get(stat, stat), "event": g["event"],
-                     "line": line, "offered": sorted(g["sides"]),
-                     "model_proj": proj,
-                     "p_over": round(p_over, 3), "p_under": round(p_under, 3),
-                     "fair_over": round(1 / p_over, 2) if p_over > 1e-9 else None,
-                     "fair_under": round(1 / p_under, 2) if p_under > 1e-9 else None,
-                     "lean": "OVER" if p_over >= 0.5 else "UNDER",
-                     "lean_p": round(max(p_over, p_under), 3)})
-    # dedupe by (player name, stat, line) in case matching mapped a name to two ids
-    seen, uniq = set(), []
-    for r in rows:
-        k = (str(r["player"]).lower(), r["stat_label"], r["line"])
-        if k not in seen:
-            seen.add(k); uniq.append(r)
-    rows = uniq
-    # sort by player, then stat, then line (so a player's lines are grouped)
-    rows.sort(key=lambda r: (str(r["player"]).lower(), r["stat_label"], r["line"]))
+    for pid, meta in info.items():
+        specs = []   # (stat, proj, dist)
+        if len(ti) and pid in ti.index:
+            lam = float(_one(ti.loc[pid])["lambda"])
+            specs.append(("tries", lam, {"k": "pois", "lam": round(lam, 4)}))
+        if len(pi) and pid in pi.index:
+            pr = _one(pi.loc[pid])
+            lt, lg, lfg = float(pr["lt"]), float(pr["lg"]), float(pr["lfg"])
+            proj = round(4 * lt + 2 * lg + lfg, 1)
+            specs.append(("points", proj, {"k": "conv", "lt": round(lt, 4),
+                                           "lg": round(lg, 4), "lfg": round(lfg, 4)}))
+        if len(ri) and pid in ri.index:
+            rr = _one(ri.loc[pid])
+            for stat, (target, col) in NORM_STATS.items():
+                if col not in rr or pd.isna(rr[col]) or target not in disp:
+                    continue
+                mu = float(rr[col])
+                sg = PRC.sigma_for(target, mu, disp)
+                specs.append((stat, mu, {"k": "norm", "mu": round(mu, 2), "sg": round(sg, 2)}))
+
+        for stat, proj, dist in specs:
+            if proj is None or proj < MIN_PROJ.get(stat, 0):
+                continue
+            d = dab.get((pid, stat), {})
+            dab_line = d.get("line")
+            rows.append({
+                "player": meta["player"], "team": meta["team"], "matchId": meta.get("matchId"),
+                "event": meta["event"], "stat": stat, "stat_label": STAT_LABEL.get(stat, stat),
+                "proj": round(float(proj), 1), "dist": dist,
+                "dab_line": dab_line, "offered": d.get("offered") or [],
+                "line": dab_line if dab_line is not None else _suggest_line(stat, proj)})
+
+    rows.sort(key=lambda r: (str(r["player"]).lower(), r["stat_label"]))
+    matches = sorted(set(r["event"] for r in rows if r.get("event")))
     out = {"generated": pd.Timestamp.now("UTC").isoformat(), "multipliers": MULTIPLIERS,
-           "rows": rows, "stats": sorted(set(r["stat_label"] for r in rows))}
+           "rows": rows, "stats": sorted(set(r["stat_label"] for r in rows)),
+           "matches": matches, "n_dabble": sum(1 for r in rows if r["dab_line"] is not None)}
     json.dump(out, open("reports/pickem.json", "w"))
-    n_strong = sum(1 for r in rows if r["lean_p"] >= 0.6)
-    print(f"Wrote reports/pickem.json: {len(rows)} Pick'em lines "
-          f"({n_strong} with a model lean >=60%)")
     by = {}
     for r in rows:
         by[r["stat_label"]] = by.get(r["stat_label"], 0) + 1
+    print(f"Wrote reports/pickem.json: {len(rows)} model rows "
+          f"({out['n_dabble']} prefilled from live Dabble lines)")
     print("  by stat:", by)
 
 

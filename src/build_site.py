@@ -269,54 +269,51 @@ This page fills automatically — including Performance Points if Dabble posts t
         return page("Pick'em", body, "pickem", updated)
     stats = pickem.get("stats", [])
     stat_opts = "".join(f'<option value="{esc(s)}">{esc(s)}</option>' for s in stats)
+    match_opts = "".join(f'<option value="{esc(m)}">{esc(m)}</option>'
+                         for m in pickem.get("matches", []))
     mult_txt = " · ".join(f"{k} legs ×{v}" for k, v in sorted(mult.items(), key=lambda x: int(x[0])))
-
-    def side_cell(r, side):
-        p = r.get(f"p_{side}") or 0
-        fair = r.get(f"fair_{side}")
-        offered = side in (r.get("offered") or ["over", "under"])
-        # Dabble sometimes posts only one side (e.g. Over only). Don't show a model
-        # price for a side you can't actually back — mark it clearly as unavailable.
-        if not offered:
-            return '<td class="na" title="Dabble isn\'t offering this side">not offered</td>'
-        lean = (r.get("lean") or "").lower() == side
-        leg = json.dumps({"pl": r.get("player"), "st": r.get("stat_label"),
-                          "ln": r.get("line"), "sd": side, "p": p})
-        cls = "pos" if (lean and p >= 0.6) else ""
-        btn = (f'<button class="addleg" data-leg=\'{esc(leg)}\' onclick="addLeg(this)">+</button>')
-        return (f'<td class="{cls}"><b>{p*100:.0f}%</b> '
-                f'<span class="mut">${fair if fair else "–"}</span> {btn}</td>')
+    n_dab = pickem.get("n_dabble", 0)
 
     trs = []
     for r in rows:
-        proj = r.get("model_proj")
-        lean_p = r.get("lean_p") or 0
+        dist = esc(json.dumps(r.get("dist") or {}))
+        dab = r.get("dab_line")
+        dab_txt = (f'{dab:g}' if isinstance(dab, (int, float)) else "–")
         trs.append(
-            f'<tr data-stat="{esc(r.get("stat_label"))}" data-p="{lean_p}">'
+            f'<tr data-stat="{esc(r.get("stat_label"))}" data-match="{esc(r.get("event",""))}" '
+            f'data-pl="{esc(r.get("player"))}" data-dist=\'{dist}\' data-p="0">'
             f'<td class="pl"><b>{esc(r.get("player"))}</b><span class="tm">{esc(r.get("team"))}</span></td>'
-            f'<td>{esc(r.get("stat_label"))}</td><td><b>{r.get("line")}</b></td>'
-            f'<td class="mut">{proj if proj is not None else "–"}</td>'
-            f'{side_cell(r, "over")}{side_cell(r, "under")}</tr>')
-    body = f"""<div class="hero"><h1>Pick'em <span class="tag">Dabble · model vs line</span></h1>
+            f'<td>{esc(r.get("stat_label"))}</td>'
+            f'<td class="mut">{r.get("proj") if r.get("proj") is not None else "–"}</td>'
+            f'<td><input class="lnin" inputmode="decimal" value="{r.get("line")}" '
+            f'oninput="pkCompute(this.closest(\'tr\'))"></td>'
+            f'<td class="dab">{dab_txt}</td>'
+            f'<td class="pko"></td><td class="pku"></td></tr>')
+    dab_note = (f"{n_dab} lines prefilled from live Dabble data. "
+                if n_dab else "Dabble is iOS-only so we can't pull its lines automatically — ")
+    body = f"""<div class="hero"><h1>Pick'em <span class="tag">model vs line</span></h1>
 <p>Dabble's Pick'em is a multiplier/parlay game (min 2 legs; {esc(mult_txt)}) — there's no single
-price to de-vig, so instead the model judges <b>Dabble's line</b>. Each row shows the model's
-projection and its <b>price</b> (fair odds) for both Over and More/Less — the side the model leans
-is highlighted. Add legs (＋) to build a slip; a parlay is +EV when
+price to de-vig, so the model judges the <b>line</b> instead. {dab_note}type the line you see in the
+<b>Your line</b> box and the model instantly returns P(over)/P(under) and fair odds for that line.
+Add legs (＋) to build a slip; a parlay is +EV when
 <code>multiplier × (product of your win probabilities) &gt; 1</code>.</p></div>
 
 <div class="filters">
+  <label>Match <select id="pk-match" onchange="pkFilter()"><option value="all">All matches</option>{match_opts}</select></label>
   <label>Stat <select id="pk-stat" onchange="pkFilter()"><option value="all">All stats</option>{stat_opts}</select></label>
   <label class="chk"><input type="checkbox" id="pk-strong" onchange="pkFilter()"> strong leans only (≥60%)</label>
   <span class="count" id="pk-count"></span>
 </div>
 <div id="slip" class="slip">Slip empty — add legs to build a parlay.</div>
 <div class="tablewrap scrolltable"><table id="pkm"><thead><tr>
-<th class="pl">Player</th><th>Stat</th><th>Line</th><th>Model proj</th>
+<th class="pl">Player</th><th>Stat</th><th>Model proj</th><th title="Type the line you see on Dabble">Your line</th>
+<th title="Dabble's posted line, when we have it">Dabble</th>
 <th>Over — P · price</th><th>Under — P · price</th></tr></thead>
 <tbody>{''.join(trs)}</tbody></table></div>
-<p class="disclaim">“Price” is the model's fair odds (1 ÷ model probability) for that side. Pick'em isn't
-fixed odds, so this isn't a single-bet EV — use it to find the strongest legs; the slip shows the
-parlay's combined probability, Dabble multiplier and EV.</p>
+<p class="disclaim">“Price” is the model's fair odds (1 ÷ model probability) for that side, computed from the
+calibrated stat model at the line you enter. Pick'em isn't fixed odds, so this isn't a single-bet EV —
+use it to find the strongest legs; the slip shows the parlay's combined probability, Dabble multiplier
+and theoretical EV.</p>
 <script>window.PK_MULT={json.dumps(mult)};</script><script src="app.js"></script>"""
     return page("Pick'em", body, "pickem", updated)
 
@@ -1084,32 +1081,69 @@ function cmpRestore(){
    if(v){ inp.value=v; cmpManual(inp); }
  });
 }
-// ---- Pick'em filter + parlay builder ----
+// ---- Pick'em: client-side model maths (mirrors pricing.py / player_points.py) ----
+function _erf(x){var s=x<0?-1:1;x=Math.abs(x);var t=1/(1+0.3275911*x);
+ var y=1-(((((1.061405429*t-1.453152027)*t)+1.421413741)*t-0.284496736)*t+0.254829592)*t*Math.exp(-x*x);
+ return s*y;}
+function _ncdf(z){return 0.5*(1+_erf(z/Math.SQRT2));}
+function _poisPmf(lam,k){var p=Math.exp(-lam);for(var i=1;i<=k;i++)p*=lam/i;return p;}
+function _poisTail(lam,line){var fl=Math.floor(line),s=0;for(var k=0;k<=fl;k++)s+=_poisPmf(lam,k);return 1-s;}
+function _pointsPover(lt,lg,lfg,line){ // 4*Pois(lt)+2*Pois(lg)+Pois(lfg), kmax 8/14/4
+ var T=[],G=[],F=[],i;lt=Math.max(lt,1e-9);lg=Math.max(lg,1e-9);lfg=Math.max(lfg,1e-9);
+ for(i=0;i<=8;i++)T.push(_poisPmf(lt,i));for(i=0;i<=14;i++)G.push(_poisPmf(lg,i));for(i=0;i<=4;i++)F.push(_poisPmf(lfg,i));
+ var s=0;for(var ti=0;ti<T.length;ti++)for(var gi=0;gi<G.length;gi++){var base=4*ti+2*gi,ptg=T[ti]*G[gi];
+   for(var fi=0;fi<F.length;fi++){if(base+fi>line)s+=ptg*F[fi];}}
+ return s;}
+function _normOver(mu,sg,line){sg=Math.max(sg,1e-6);var f=Math.round((line-Math.floor(line))*1e4)/1e4;
+ if(f===0.25||f===0.75)return (_normOver(mu,sg,line-0.25)+_normOver(mu,sg,line+0.25))/2;
+ if(Math.abs(f-0.5)<1e-6)return 1-_ncdf((line-mu)/sg);
+ return 1-_ncdf((line+0.5-mu)/sg);} // integer line: push band, p_over = 1-cdf(line+0.5)
+function pkPover(d,line){ if(!d||isNaN(line))return null;
+ if(d.k==='pois')return _poisTail(d.lam,line);
+ if(d.k==='conv')return _pointsPover(d.lt,d.lg,d.lfg,line);
+ if(d.k==='norm')return _normOver(d.mu,d.sg,line); return null;}
+function _fair(p){return (p&&p>1e-9)?('$'+(1/p).toFixed(2)):'$–';}
+function pkCompute(tr){
+ var d; try{d=JSON.parse(tr.dataset.dist);}catch(e){return;}
+ var line=parseFloat(tr.querySelector('input.lnin').value);
+ var ov=tr.querySelector('.pko'), un=tr.querySelector('.pku');
+ var po=pkPover(d,line);
+ if(po===null){ov.innerHTML='';un.innerHTML='';tr.dataset.p=0;return;}
+ po=Math.min(Math.max(po,0),1);var pu=1-po;
+ tr.dataset.po=po;tr.dataset.line=line;tr.dataset.p=Math.max(po,pu);
+ ov.className='pko'+(po>=0.6?' pos':'');un.className='pku'+(pu>=0.6?' pos':'');
+ ov.innerHTML='<b>'+(po*100).toFixed(0)+'%</b> <span class="mut">'+_fair(po)+'</span> <button class="addleg" data-sd="over" onclick="pkAdd(this)">+</button>';
+ un.innerHTML='<b>'+(pu*100).toFixed(0)+'%</b> <span class="mut">'+_fair(pu)+'</span> <button class="addleg" data-sd="under" onclick="pkAdd(this)">+</button>';
+}
+function pkComputeAll(){ var t=document.getElementById('pkm'); if(t)t.querySelectorAll('tbody tr').forEach(pkCompute); }
 function pkFilter(){
  var tbl=document.getElementById('pkm'); if(!tbl)return;
+ var match=(document.getElementById('pk-match')||{}).value||'all';
  var stat=(document.getElementById('pk-stat')||{}).value||'all';
  var strong=(document.getElementById('pk-strong')||{}).checked;
  var n=0;
  tbl.querySelectorAll('tbody tr').forEach(function(tr){
    var ok=true, p=parseFloat(tr.dataset.p);
+   if(match!=='all' && tr.dataset.match!==match) ok=false;
    if(stat!=='all' && tr.dataset.stat!==stat) ok=false;
-   if(strong && !(p>=0.55)) ok=false;
+   if(strong && !(p>=0.6)) ok=false;
    tr.style.display=ok?'':'none'; if(ok)n++;
  });
- var c=document.getElementById('pk-count'); if(c)c.textContent=n+' legs';
+ var c=document.getElementById('pk-count'); if(c)c.textContent=n+' rows';
 }
 var PK_SLIP=[];
-function addLeg(btn){
- var leg=JSON.parse(btn.dataset.leg);
- if(PK_SLIP.find(function(l){return l.pl===leg.pl&&l.st===leg.st&&l.ln===leg.ln;}))return; // one side per line
- PK_SLIP.push(leg); btn.textContent='✓'; btn.disabled=true; renderSlip();
+function pkAdd(btn){
+ var tr=btn.closest('tr'); if(!tr.dataset.po) pkCompute(tr);
+ var side=btn.dataset.sd, po=parseFloat(tr.dataset.po);
+ if(isNaN(po))return;
+ var p=side==='over'?po:1-po, ln=parseFloat(tr.dataset.line);
+ var pl=tr.dataset.pl, st=tr.dataset.stat;
+ if(PK_SLIP.find(function(l){return l.pl===pl&&l.st===st&&l.ln===ln&&l.sd===side;}))return;
+ PK_SLIP.push({pl:pl,st:st,ln:ln,sd:side,p:p,btn:btn});
+ btn.textContent='✓'; btn.disabled=true; renderSlip();
 }
-function rmLeg(i){ PK_SLIP.splice(i,1); renderSlip(); resetAddBtns(); }
-function clearSlip(){ PK_SLIP=[]; renderSlip(); resetAddBtns(); }
-function resetAddBtns(){ document.querySelectorAll('.addleg').forEach(function(b){
- var leg=JSON.parse(b.dataset.leg);
- var inSlip=PK_SLIP.find(function(l){return l.pl===leg.pl&&l.st===leg.st&&l.ln===leg.ln&&l.sd===leg.sd;});
- b.textContent=inSlip?'✓':'+'; b.disabled=!!inSlip; }); }
+function rmLeg(i){ var l=PK_SLIP[i]; if(l&&l.btn){l.btn.textContent='+';l.btn.disabled=false;} PK_SLIP.splice(i,1); renderSlip(); }
+function clearSlip(){ PK_SLIP.forEach(function(l){if(l.btn){l.btn.textContent='+';l.btn.disabled=false;}}); PK_SLIP=[]; renderSlip(); }
 function renderSlip(){
  var el=document.getElementById('slip'); if(!el)return;
  if(!PK_SLIP.length){el.className='slip';el.textContent='Slip empty — add legs to build a parlay.';return;}
@@ -1136,7 +1170,7 @@ function showTab(group,name){
 }
 document.addEventListener('DOMContentLoaded', function(){
  if(document.getElementById('cmp')){ cmpFilter(); cmpRestore(); }
- if(document.getElementById('pkm')) pkFilter();
+ if(document.getElementById('pkm')){ pkComputeAll(); pkFilter(); }
 });
 """
 
