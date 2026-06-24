@@ -381,11 +381,22 @@ def ladbrokes_event_rows(ev):
                 elif UNDER_RE.search(enm):
                     under = pr
                     if num: line = float(num.group(1))
-            if over is None and under is None:
+            if over is not None or under is not None:
+                rows.append({**base, "category": "player", "stat": stat, "player": player,
+                             "line": line, "over": over, "under": under, "single": None,
+                             "selection_raw": ""})
                 continue
-            rows.append({**base, "category": "player", "stat": stat, "player": player,
-                         "line": line, "over": over, "under": under, "single": None,
-                         "selection_raw": ""})
+            # No over/under — capture any "<Player> to Score N+ Points" alt-line entrants
+            # (1-way over, real prices), same as Sportsbet posts player points.
+            for e in ents:
+                enm = e.get("name", "")
+                pr = entrant_price(e["id"])
+                ln = _plus_line(enm) if _plus_line(enm) is not None else _plus_line(mname)
+                if pr is None or ln is None:
+                    continue
+                rows.append({**base, "category": "player", "stat": stat, "kind": "pts_plus",
+                             "player": player, "line": ln, "over": None, "under": None,
+                             "single": pr, "selection_raw": enm})
         elif TRYSCORER_RE.match(mname.strip()):
             for e in ents:
                 pr = entrant_price(e["id"])
@@ -682,6 +693,16 @@ def fetch_pointsbet():
                     rows.append({**base, "category": "player", "stat": stat, "kind": None,
                                  "player": player, "line": line, "over": over, "under": under,
                                  "single": None, "selection_raw": ""})
+                    continue
+                # No over/under — capture "<Player> to Score N+ Points" alt-line outcomes.
+                for o in outs:
+                    nm, pr = o.get("name", ""), o.get("price")
+                    ln = _plus_line(nm) if _plus_line(nm) is not None else _plus_line(mname)
+                    if pr is None or ln is None:
+                        continue
+                    rows.append({**base, "category": "player", "stat": stat, "kind": "pts_plus",
+                                 "player": player, "line": ln, "over": None, "under": None,
+                                 "single": float(pr), "selection_raw": nm})
     print(f"  [pointsbet] {len(evs)} NRL events, {len(rows)} market rows")
     return rows
 
