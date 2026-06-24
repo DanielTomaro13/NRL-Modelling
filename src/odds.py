@@ -454,6 +454,7 @@ DAB_RUGBY_SPORT = "Rugby League"
 DAB_PICKEM_STAT = {
     "points": "points", "tries": "tries",
     "performancepoints": "performance_points", "performance_points": "performance_points",
+    "playerperformance": "performance_points",  # Dabble labels perf points "player-performance"
     "fantasypoints": "performance_points", "fantasy": "performance_points",
     "tackles": "tackles", "runmetres": "run_metres", "runmeters": "run_metres",
     "metres": "run_metres", "tacklebreaks": "tackle_breaks", "kickerpoints": "kicker_points",
@@ -467,18 +468,16 @@ def _dab_session():
         print("  [dabble] curl_cffi not installed — skipping")
         return None, None
     import os
-    auth = os.environ.get("DABBLE_AUTH", "").strip()
-    if not auth:
-        print("  [dabble] no DABBLE_AUTH (Bearer token) — skipping. Capture it from the "
-              "iOS app with Charles (see README).")
-        return None, None
-    if not auth.lower().startswith("bearer "):
-        auth = "Bearer " + auth
-    headers = {"authorization": auth, "accept": "application/json",
+    # Dabble's public iOS API is often reachable without auth (from an AU IP);
+    # use a Bearer token if one is supplied, otherwise fall back to anonymous access.
+    headers = {"accept": "application/json",
                "x-device-id": os.environ.get("DABBLE_DEVICE_ID", "00000000-0000-0000-0000-000000000000"),
                "user-agent": os.environ.get("DABBLE_UA", "Dabble/1000041710 CFNetwork/3826.600.41.2.1 Darwin/24.6.0"),
                "x-app-version": os.environ.get("DABBLE_APP_VERSION", "4.17.10+019ededb"),
                "accept-language": "en-AU,en;q=0.9"}
+    auth = os.environ.get("DABBLE_AUTH", "").strip()
+    if auth:
+        headers["authorization"] = auth if auth.lower().startswith("bearer ") else "Bearer " + auth
     if os.environ.get("DABBLE_COOKIE", "").strip():
         headers["cookie"] = os.environ["DABBLE_COOKIE"].strip()
     return creq, headers
@@ -580,7 +579,7 @@ def dabble_fixture_rows(creq, headers, fixture):
     # as category="pickem" (NOT mixed into fixed-odds EV); the model prices them by P(over
     # the line) on the Pick'em page.
     for pp in sfd.get("playerProps", []):
-        stats = [str(s).lower().replace(" ", "") for s in (pp.get("stats") or [])]
+        stats = [str(s).lower().replace(" ", "").replace("-", "") for s in (pp.get("stats") or [])]
         stat = next((DAB_PICKEM_STAT[s] for s in stats if s in DAB_PICKEM_STAT), None)
         if not stat or pp.get("value") is None:
             continue
