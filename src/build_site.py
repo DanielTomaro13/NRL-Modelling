@@ -930,6 +930,9 @@ td.warn{color:var(--warn)}.warn{color:var(--warn)}
 .slip .chip{display:inline-block;background:var(--chip);border-radius:7px;padding:3px 9px;margin:3px 4px;font-size:12.5px}
 .slip .chip a{color:var(--warn);cursor:pointer;margin-left:5px;font-weight:700}
 .slipres{margin-top:9px;font-size:14px}.slipres .neg{color:#e0605f}
+.sliphead{display:flex;align-items:center;gap:12px;margin-bottom:6px}
+.clearbtn{margin-left:auto;background:transparent;color:var(--warn);border:1px solid var(--line);border-radius:7px;padding:3px 11px;font-size:12.5px;cursor:pointer;font-weight:600}
+.clearbtn:hover{border-color:var(--warn)}
 .tabs{display:flex;gap:6px;margin:4px 0 0;flex-wrap:wrap}
 .tabs button{background:var(--chip);color:var(--mut);border:1px solid var(--line);border-radius:9px;
 padding:7px 14px;font-size:13.5px;cursor:pointer;font-weight:600}
@@ -1067,17 +1070,21 @@ function addLeg(btn){
  if(PK_SLIP.find(function(l){return l.pl===leg.pl&&l.st===leg.st&&l.ln===leg.ln;}))return; // one side per line
  PK_SLIP.push(leg); btn.textContent='✓'; btn.disabled=true; renderSlip();
 }
-function rmLeg(i){ PK_SLIP.splice(i,1); renderSlip();
- document.querySelectorAll('.addleg').forEach(function(b){b.textContent='+';b.disabled=false;}); }
+function rmLeg(i){ PK_SLIP.splice(i,1); renderSlip(); resetAddBtns(); }
+function clearSlip(){ PK_SLIP=[]; renderSlip(); resetAddBtns(); }
+function resetAddBtns(){ document.querySelectorAll('.addleg').forEach(function(b){
+ var leg=JSON.parse(b.dataset.leg);
+ var inSlip=PK_SLIP.find(function(l){return l.pl===leg.pl&&l.st===leg.st&&l.ln===leg.ln&&l.sd===leg.sd;});
+ b.textContent=inSlip?'✓':'+'; b.disabled=!!inSlip; }); }
 function renderSlip(){
  var el=document.getElementById('slip'); if(!el)return;
  if(!PK_SLIP.length){el.className='slip';el.textContent='Slip empty — add legs to build a parlay.';return;}
  var prod=PK_SLIP.reduce(function(a,l){return a*l.p;},1);
  var n=PK_SLIP.length; var m=(window.PK_MULT||{})[n];
  var legsHtml=PK_SLIP.map(function(l,i){return '<span class="chip">'+l.pl+' '+l.sd.toUpperCase()+' '+l.ln+' ('+(l.p*100).toFixed(0)+'%) <a onclick="rmLeg('+i+')">×</a></span>';}).join(' ');
- var out='<b>'+n+'-leg parlay</b> '+legsHtml+'<div class="slipres">';
+ var out='<div class="sliphead"><b>'+n+'-leg parlay</b> <button class="clearbtn" onclick="clearSlip()">Clear</button></div>'+legsHtml+'<div class="slipres">';
  if(!m){ out+= n<2 ? 'Add at least 2 legs (minimum for a parlay).' : 'No multiplier for '+n+' legs.'; }
- else { var ev=m*prod-1; out+='combined win prob <b>'+(prod*100).toFixed(1)+'%</b> · multiplier <b>×'+m+'</b> · EV <b class="'+(ev>0?'pos':'neg')+'">'+(ev*100>=0?'+':'')+(ev*100).toFixed(0)+'%</b>'; }
+ else { var ev=m*prod-1; out+='combined win prob <b>'+(prod*100).toFixed(1)+'%</b> · multiplier <b>×'+m+'</b> · theoretical EV <b class="'+(ev>0?'pos':'neg')+'">'+(ev*100>=0?'+':'')+(ev*100).toFixed(0)+'%</b>'; }
  out+='</div>';
  el.className='slip on'; el.innerHTML=out;
 }

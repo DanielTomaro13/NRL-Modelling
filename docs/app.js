@@ -125,17 +125,21 @@ function addLeg(btn){
  if(PK_SLIP.find(function(l){return l.pl===leg.pl&&l.st===leg.st&&l.ln===leg.ln;}))return; // one side per line
  PK_SLIP.push(leg); btn.textContent='✓'; btn.disabled=true; renderSlip();
 }
-function rmLeg(i){ PK_SLIP.splice(i,1); renderSlip();
- document.querySelectorAll('.addleg').forEach(function(b){b.textContent='+';b.disabled=false;}); }
+function rmLeg(i){ PK_SLIP.splice(i,1); renderSlip(); resetAddBtns(); }
+function clearSlip(){ PK_SLIP=[]; renderSlip(); resetAddBtns(); }
+function resetAddBtns(){ document.querySelectorAll('.addleg').forEach(function(b){
+ var leg=JSON.parse(b.dataset.leg);
+ var inSlip=PK_SLIP.find(function(l){return l.pl===leg.pl&&l.st===leg.st&&l.ln===leg.ln&&l.sd===leg.sd;});
+ b.textContent=inSlip?'✓':'+'; b.disabled=!!inSlip; }); }
 function renderSlip(){
  var el=document.getElementById('slip'); if(!el)return;
  if(!PK_SLIP.length){el.className='slip';el.textContent='Slip empty — add legs to build a parlay.';return;}
  var prod=PK_SLIP.reduce(function(a,l){return a*l.p;},1);
  var n=PK_SLIP.length; var m=(window.PK_MULT||{})[n];
  var legsHtml=PK_SLIP.map(function(l,i){return '<span class="chip">'+l.pl+' '+l.sd.toUpperCase()+' '+l.ln+' ('+(l.p*100).toFixed(0)+'%) <a onclick="rmLeg('+i+')">×</a></span>';}).join(' ');
- var out='<b>'+n+'-leg parlay</b> '+legsHtml+'<div class="slipres">';
+ var out='<div class="sliphead"><b>'+n+'-leg parlay</b> <button class="clearbtn" onclick="clearSlip()">Clear</button></div>'+legsHtml+'<div class="slipres">';
  if(!m){ out+= n<2 ? 'Add at least 2 legs (minimum for a parlay).' : 'No multiplier for '+n+' legs.'; }
- else { var ev=m*prod-1; out+='combined win prob <b>'+(prod*100).toFixed(1)+'%</b> · multiplier <b>×'+m+'</b> · EV <b class="'+(ev>0?'pos':'neg')+'">'+(ev*100>=0?'+':'')+(ev*100).toFixed(0)+'%</b>'; }
+ else { var ev=m*prod-1; out+='combined win prob <b>'+(prod*100).toFixed(1)+'%</b> · multiplier <b>×'+m+'</b> · theoretical EV <b class="'+(ev>0?'pos':'neg')+'">'+(ev*100>=0?'+':'')+(ev*100).toFixed(0)+'%</b>'; }
  out+='</div>';
  el.className='slip on'; el.innerHTML=out;
 }

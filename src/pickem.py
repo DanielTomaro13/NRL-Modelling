@@ -84,6 +84,10 @@ def main():
         p_over = _p_over(stat, line, tr, pr, rr, disp)
         if p_over is None:
             continue
+        # drop near-certain lines (e.g. 3+ tries for a winger, a forward's points under) —
+        # they aren't real Pick'em decisions and just clutter the board / inflate parlays.
+        if p_over < 0.07 or p_over > 0.93:
+            continue
         p_under = 1 - p_over
         proj = _proj(stat, tr, pr, rr)
         team = None
@@ -99,6 +103,13 @@ def main():
                      "fair_under": round(1 / p_under, 2) if p_under > 1e-9 else None,
                      "lean": "OVER" if p_over >= 0.5 else "UNDER",
                      "lean_p": round(max(p_over, p_under), 3)})
+    # dedupe by (player name, stat, line) in case matching mapped a name to two ids
+    seen, uniq = set(), []
+    for r in rows:
+        k = (str(r["player"]).lower(), r["stat_label"], r["line"])
+        if k not in seen:
+            seen.add(k); uniq.append(r)
+    rows = uniq
     # sort by player, then stat, then line (so a player's lines are grouped)
     rows.sort(key=lambda r: (str(r["player"]).lower(), r["stat_label"], r["line"]))
     out = {"generated": pd.Timestamp.now("UTC").isoformat(), "multipliers": MULTIPLIERS,
