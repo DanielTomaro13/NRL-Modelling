@@ -649,16 +649,29 @@ TAB_TRY = {"to score a try": "anytime", "to score 2+ tries": "2+",
 
 
 def _tab_token():
+    """Get a TAB access token. Prefer minting a FRESH one via the client_credentials
+    grant (so it never expires between runs); fall back to a static TAB_ACCESS_TOKEN."""
     import os
+    cid = os.environ.get("TAB_CLIENT_ID", "").strip()
+    csec = os.environ.get("TAB_CLIENT_SECRET", "").strip()
+    if cid and csec:
+        try:
+            from curl_cffi import requests as creq
+            r = creq.post(TAB_TOKEN_URL,
+                          data={"grant_type": "client_credentials",
+                                "client_id": cid, "client_secret": csec},
+                          headers={"Accept": "application/json"},
+                          impersonate="chrome", timeout=15)
+            if r.status_code == 200 and r.json().get("access_token"):
+                print(f"  [tab] minted fresh token (expires in "
+                      f"{r.json().get('expires_in', '?')}s)")
+                return r.json()["access_token"]
+            print(f"  [tab] token refresh failed: HTTP {r.status_code} {r.text[:120]}")
+        except Exception as e:
+            print(f"  [tab] token refresh error: {e!r}")
     tok = os.environ.get("TAB_ACCESS_TOKEN", "").strip()
     if tok:
         return tok
-    cid, csec = os.environ.get("TAB_CLIENT_ID", ""), os.environ.get("TAB_CLIENT_SECRET", "")
-    if cid and csec:
-        d = _cffi_get(f"{TAB_TOKEN_URL}?grant_type=client_credentials&client_id={cid}"
-                      f"&client_secret={csec}", {"Accept": "application/json"})
-        if d and d.get("access_token"):
-            return d["access_token"]
     return None
 
 

@@ -97,8 +97,10 @@ markets the industry posts — **Try Scorer, Performance Points, Kicker Points, 
 canonicalised to NRL nicknames so a player lines up across books (e.g. "Souths" == "South Sydney
 Rabbitohs"). All books use `curl_cffi` (browser-TLS) and run from `src/odds.py`.
 
-> **TAB** uses OAuth2 — set `TAB_ACCESS_TOKEN` (a token expires in ~3h) or, for auto-refresh,
-> `TAB_CLIENT_ID` + `TAB_CLIENT_SECRET` (as env vars / GitHub secrets). **PointsBet** needs no auth.
+> **TAB** uses OAuth2. **Recommended:** set `TAB_CLIENT_ID` + `TAB_CLIENT_SECRET` — `src/odds.py`
+> mints a **fresh access token every run** via the `client_credentials` grant
+> (`https://api.beta.tab.com.au/oauth/token`), so it never expires in CI. A static
+> `TAB_ACCESS_TOKEN` also works but lapses in ~3h. **PointsBet** needs no auth.
 > **Dabble** is the iOS app's backend — set `DABBLE_AUTH="Bearer <token>"` captured from the app
 > with Charles (see below; ~1h expiry). AU bookmaker APIs may geo-block some CI regions; running
 > `python src/odds.py` from an AU connection always works.
