@@ -736,7 +736,9 @@ def build_scoring(tries, try_edges, tryinfo, sc, odds, updated):
             match_set.append(f'{g.iloc[0]["team"]} vs {g.iloc[0]["opp"]}')
     match_opts = "".join(f'<option value="{esc(m)}">{esc(m)}</option>' for m in sorted(set(match_set)))
 
-    tabs = [("points", "Player points"), ("kicker", "Kicker points"), ("tries", "Try scorers")]
+    # No book offers standalone kicker points (it's folded into player points), so the
+    # kicker tab is dropped — the kicker model still feeds the player-points projection.
+    tabs = [("points", "Player points"), ("tries", "Try scorers")]
     tab_btns = "".join(
         f'<button data-tabgroup="sc" data-tab="{k}" class="{"on" if i==0 else ""}" '
         f'onclick="showTab(\'sc\',\'{k}\')">{lbl}</button>' for i, (k, lbl) in enumerate(tabs))
@@ -744,9 +746,6 @@ def build_scoring(tries, try_edges, tryinfo, sc, odds, updated):
         "points": f'<p class="lead">Expected points per player, split into try points and '
                   f'goal-kicking points; the model edge shows where a book has posted a line.</p>'
                   + _points_section(ppoints, points_edges),
-        "kicker": f'<p class="lead">The designated goal-kickers and their expected kicking points '
-                  f'(2 per goal + field goals), with any live kicker-points lines.</p>'
-                  + _kicker_section(ppoints, odds),
         "tries": f'<p class="lead">Model anytime-try probability and fair price next to every '
                  f'book\'s live price (best highlighted). Best EV = edge at the best price.</p>'
                  + _try_section(tries, odds),

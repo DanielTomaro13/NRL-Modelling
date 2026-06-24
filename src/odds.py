@@ -238,11 +238,22 @@ def sportsbet_event_rows(ev):
                 "market_raw": mname, "fetched_at": fetched}
         if stat:  # player stat over/under prop
             line, over, under = _sb_pair_overunder(m)
-            if over is None and under is None:
+            if over is not None or under is not None:
+                rows.append({**base, "category": "player", "stat": stat, "player": player,
+                             "line": line, "over": over, "under": under, "single": None,
+                             "selection_raw": ""})
                 continue
-            rows.append({**base, "category": "player", "stat": stat, "player": player,
-                         "line": line, "over": over, "under": under, "single": None,
-                         "selection_raw": ""})
+            # No over/under handicap — Sportsbet posts player points (and similar) as
+            # alt-line "<Player> to Score N+ Points" selections (1-way over, real prices).
+            for s in m.get("selections", []):
+                pr = (s.get("price") or {}).get("winPrice")
+                snm = s.get("name", "")
+                ln = _plus_line(snm)
+                if pr is None or ln is None:
+                    continue
+                rows.append({**base, "category": "player", "stat": stat, "kind": "pts_plus",
+                             "player": player, "line": ln, "over": None, "under": None,
+                             "single": float(pr), "selection_raw": snm})
         elif TRYSCORER_RE.match(mname.strip()):  # clean anytime/first try scorer
             for s in m.get("selections", []):
                 pr = (s.get("price") or {}).get("winPrice")
@@ -728,6 +739,7 @@ def fetch_tab():
         home = next((c["name"] for c in cons if c.get("isHome")), None)
         away = next((c["name"] for c in cons if not c.get("isHome")), None)
         name = match.get("name", f"{home} v {away}")
+        team_keys = (norm_team(home), norm_team(away))
         for mk in match.get("markets", []):
             bo = (mk.get("betOption") or "").strip()
             props = mk.get("propositions", [])
@@ -743,6 +755,36 @@ def fetch_tab():
                     rows.append({**base, "category": "player", "stat": "tries", "kind": kind,
                                  "player": _strip_team(nm), "line": None, "over": None,
                                  "under": None, "single": float(pr), "selection_raw": nm})
+                continue
+            # Player points (and other player props). TAB posts these either as alt-line
+            # "<Player> to Score N+ Points" selections, or as Over/Under propositions on a
+            # "<Player> Points" market. Detect the stat from the market or proposition name.
+            mstat = classify_player_prop(bo, team_keys)[1]
+            for p in props:
+                pr = p.get("returnWin")
+                nm = (p.get("name") or "").strip()
+                if not pr or not nm:
+                    continue
+                stat = mstat or classify_player_prop(nm, team_keys)[1]
+                if not stat:
+                    continue
+                ln = _plus_line(nm)
+                if ln is not None:   # "<Player> to Score N+ Points" 1-way over
+                    rows.append({**base, "category": "player", "stat": stat, "kind": "pts_plus",
+                                 "player": _strip_team(nm), "line": ln, "over": None,
+                                 "under": None, "single": float(pr), "selection_raw": nm})
+                    continue
+                low = nm.lower()
+                side = "over" if low.startswith("over") or " over " in low else (
+                    "under" if low.startswith("under") or " under " in low else None)
+                hcap = p.get("handicap") or p.get("line")
+                if side and hcap is not None:   # Over/Under <line> propositions
+                    player = classify_player_prop(bo, team_keys)[0] or _strip_team(nm)
+                    rows.append({**base, "category": "player", "stat": stat, "player": player,
+                                 "line": float(hcap),
+                                 "over": float(pr) if side == "over" else None,
+                                 "under": float(pr) if side == "under" else None,
+                                 "single": None, "selection_raw": nm})
     print(f"  [tab] {len(d.get('matches', []))} matches, {len(rows)} market rows")
     return rows
 
