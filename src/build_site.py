@@ -275,12 +275,15 @@ This page fills automatically — including Performance Points if Dabble posts t
         p = r.get(f"p_{side}") or 0
         fair = r.get(f"fair_{side}")
         offered = side in (r.get("offered") or ["over", "under"])
+        # Dabble sometimes posts only one side (e.g. Over only). Don't show a model
+        # price for a side you can't actually back — mark it clearly as unavailable.
+        if not offered:
+            return '<td class="na" title="Dabble isn\'t offering this side">not offered</td>'
         lean = (r.get("lean") or "").lower() == side
         leg = json.dumps({"pl": r.get("player"), "st": r.get("stat_label"),
                           "ln": r.get("line"), "sd": side, "p": p})
-        cls = "pos" if (lean and p >= 0.6) else ("mut" if not offered else "")
-        btn = (f'<button class="addleg" data-leg=\'{esc(leg)}\' onclick="addLeg(this)">+</button>'
-               if offered else '')
+        cls = "pos" if (lean and p >= 0.6) else ""
+        btn = (f'<button class="addleg" data-leg=\'{esc(leg)}\' onclick="addLeg(this)">+</button>')
         return (f'<td class="{cls}"><b>{p*100:.0f}%</b> '
                 f'<span class="mut">${fair if fair else "–"}</span> {btn}</td>')
 
@@ -877,7 +880,7 @@ th.sc,td.sc{background:#101722;border-left:1px solid #243042}th.sc:first-of-type
 font-size:12px;color:var(--mut)}.edge.pos{background:var(--posbg);color:var(--pos)}
 .edge b{color:inherit}.try{display:inline-block;padding:2px 7px;border-radius:7px;background:var(--chip);
 font-size:12px;color:var(--mut)}.try i{color:var(--acc);font-style:normal}.try.pos{background:var(--posbg);color:var(--pos)}
-td.pos{color:var(--pos)}td.mut{color:var(--mut)}td i{color:var(--acc);font-style:normal;font-size:11px}
+td.pos{color:var(--pos)}td.mut{color:var(--mut)}td.na{color:var(--mut);font-size:12px;font-style:italic;opacity:.65}td i{color:var(--acc);font-style:normal;font-size:11px}
 table.value td:first-child{text-align:left}table.value tr.pos td b{color:var(--pos)}
 .prose{max-width:780px}.prose h3{margin:22px 0 6px;font-size:17px}.prose p{color:#c4d2de}
 .prose code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:13px}
