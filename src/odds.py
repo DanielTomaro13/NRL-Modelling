@@ -867,28 +867,44 @@ def attach_player_ids(odds_df, preds_df):
     return odds_df
 
 
+# Books Sportsbet, TAB and Dabble are AU-geo-restricted and 403 / fail to auth from
+# GitHub's runners — only Ladbrokes and PointsBet fetch from CI. So a fetch that misses a
+# book must NOT wipe it: carry forward that book's last-known rows from the previous
+# snapshot (up to this many hours old) so a local AU run keeps populating them.
+ALL_BOOKS = ["sportsbet", "ladbrokes", "dabble", "pointsbet", "tab"]
+CARRY_MAX_HOURS = 48
+
+
 def main():
-    rows = []
-    try:
-        rows += fetch_sportsbet()
-    except Exception as e:
-        print("  [sportsbet] ERROR", repr(e))
-    try:
-        rows += fetch_ladbrokes()
-    except Exception as e:
-        print("  [ladbrokes] ERROR", repr(e))
-    try:
-        rows += fetch_dabble()
-    except Exception as e:
-        print("  [dabble] ERROR", repr(e))
-    try:
-        rows += fetch_pointsbet()
-    except Exception as e:
-        print("  [pointsbet] ERROR", repr(e))
-    try:
-        rows += fetch_tab()
-    except Exception as e:
-        print("  [tab] ERROR", repr(e))
+    fetched = {}
+    for name, fn in [("sportsbet", fetch_sportsbet), ("ladbrokes", fetch_ladbrokes),
+                     ("dabble", fetch_dabble), ("pointsbet", fetch_pointsbet),
+                     ("tab", fetch_tab)]:
+        try:
+            fetched[name] = fn() or []
+        except Exception as e:
+            print(f"  [{name}] ERROR", repr(e))
+            fetched[name] = []
+    rows = [r for rs in fetched.values() for r in rs]
+
+    # Carry forward books that returned nothing live this run (geo-blocked / token expired).
+    missing = [b for b in ALL_BOOKS if not fetched.get(b)]
+    if missing:
+        try:
+            prev = pd.read_parquet("reports/odds_snapshot.parquet")
+        except Exception:
+            prev = pd.DataFrame()
+        if len(prev) and "book" in prev:
+            cutoff = pd.Timestamp.now("UTC") - pd.Timedelta(hours=CARRY_MAX_HOURS)
+            ts = pd.to_datetime(prev.get("fetched_at"), utc=True, errors="coerce")
+            keep = prev[prev["book"].isin(missing) & (ts >= cutoff)].copy()
+            keep = keep.drop(columns=[c for c in ("playerId", "matched_team")
+                                      if c in keep.columns])
+            for b in missing:
+                n = int((keep["book"] == b).sum())
+                print(f"  [{b}] no live rows — carried {n} from previous snapshot"
+                      if n else f"  [{b}] no live rows and nothing recent to carry")
+            rows += keep.to_dict("records")
 
     df = pd.DataFrame(rows)
     if df.empty:
