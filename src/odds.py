@@ -491,6 +491,12 @@ def dabble_fixture_rows(creq, headers, fixture):
     fetched = now_iso()
     rows = []
     for m in markets:
+        # Dabble runs a Pick'em (multiplier/parlay) product alongside its sportsbook —
+        # "pickem_*" markets are flat even-money picks, NOT traditional fixed odds, so
+        # exclude them from the odds/EV comparison. Same for same-game-multi bundles.
+        rt = (m.get("resultingType") or "").lower()
+        if rt.startswith("pickem") or rt == "player_sgm":
+            continue
         mname = (m.get("name") or "").strip()
         outs = [(nm, pr) for nm, pr in price_by_mkt.get(m.get("id"), []) if nm and pr]
         base = {"book": "dabble", "event_name": name, "home": home, "away": away,

@@ -116,6 +116,11 @@ python src/odds.py     # pulls Dabble tries + player-points markets
 `/frontend-api/sport-fixtures/details/{fixtureId}` (`sportFixtureDetail.{markets,selections,prices}`).
 The token is short-lived — re-capture when it lapses, or add it as the `DABBLE_AUTH` GitHub secret.
 
+> **Pick'em is excluded.** Dabble runs a Pick'em (multiplier/parlay) product alongside its
+> sportsbook; those markets (`resultingType` starting `pickem_*`) are flat even-money picks, not
+> traditional fixed odds, so the fetcher drops them. Only genuine fixed-odds markets (try-scorer
+> etc.) are used for the EV comparison.
+
 > **Dabble** is behind Cloudflare bot-protection that blocks datacenter IPs / plain TLS clients,
 > so it 403s from GitHub Actions. `src/odds.py` uses `curl_cffi` (browser-TLS impersonation) and an
 > optional `DABBLE_COOKIE` env var — paste a `cf_clearance` cookie from a logged-in browser (or add
