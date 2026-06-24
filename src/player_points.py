@@ -202,9 +202,31 @@ def price_snapshot(odds_path="reports/odds_snapshot.parquet",
                      "team": pr["team"], "stat": r["stat"], "line": line,
                      "model_mean": round(model_mean, 1), "model_p_over": round(p_over, 3),
                      "best_side": side, "best_price": price,
-                     "fair": PRC.fair_odds(mp),
-                     "mkt_p": round(mkt, 3) if mkt else None,
+                     "my_price": PRC.fair_odds(mp), "mkt_p": round(mkt, 3) if mkt else None,
                      "ev_pct": round(ev * 100, 1) if ev is not None else None,
+                     "event_name": r.get("event_name"), "fetched_at": r.get("fetched_at")})
+
+    # genuine fixed-odds "To Score N+ Points" alt-lines (1-way over, single price)
+    nplus = odds[(odds["stat"] == "points") & (odds.get("kind") == "pts_plus")
+                 & odds["single"].notna() & odds["playerId"].notna()]
+    for _, r in nplus.iterrows():
+        pid = r["playerId"]
+        if pid not in pb.index or r.get("line") is None:
+            continue
+        pr = pb.loc[pid]
+        if getattr(pr, "ndim", 1) > 1:
+            pr = pr.iloc[0]
+        lt, lg, lfg = float(pr["lt"]), float(pr["lg"]), float(pr["lfg"])
+        line, price = float(r["line"]), float(r["single"])
+        pmf = points_pmf(lt, lg, lfg)
+        p_over = sum(p for v, p in pmf.items() if v > line)
+        ev = p_over * price - 1
+        rows.append({"book": r["book"], "player": pr["name"], "playerId": pid,
+                     "team": pr["team"], "stat": "points", "line": int(line + 0.5),
+                     "model_mean": round(expected_points(lt, lg, lfg), 1),
+                     "model_p_over": round(p_over, 3), "best_side": f"{int(line+0.5)}+",
+                     "best_price": price, "my_price": PRC.fair_odds(p_over), "mkt_p": None,
+                     "ev_pct": round(ev * 100, 1),
                      "event_name": r.get("event_name"), "fetched_at": r.get("fetched_at")})
     edges = pd.DataFrame(rows)
     if not edges.empty:

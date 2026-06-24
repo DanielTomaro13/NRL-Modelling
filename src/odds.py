@@ -420,6 +420,15 @@ def fetch_ladbrokes():
 # Tokens are short-lived (~1h); refresh by re-capturing. curl_cffi safari_ios TLS.
 DAB = "https://api.dabble.com.au"
 DAB_RUGBY_SPORT = "Rugby League"
+# Dabble Pick'em stat label -> our stat key (perf-points labels are guesses, ready for
+# when Dabble lists them; confirm the exact label from the app and adjust if needed).
+DAB_PICKEM_STAT = {
+    "points": "points", "tries": "tries",
+    "performancepoints": "performance_points", "performance_points": "performance_points",
+    "fantasypoints": "performance_points", "fantasy": "performance_points",
+    "tackles": "tackles", "runmetres": "run_metres", "runmeters": "run_metres",
+    "metres": "run_metres", "tacklebreaks": "tackle_breaks", "kickerpoints": "kicker_points",
+}
 
 
 def _dab_session():
@@ -537,6 +546,22 @@ def dabble_fixture_rows(creq, headers, fixture):
                 rows.append({**base, "category": "player", "stat": stat, "kind": None,
                              "player": player, "line": line, "over": over, "under": under,
                              "single": None, "selection_raw": ""})
+
+    # Pick'em props (over AND under) — a separate multiplier/parlay product. We keep them
+    # as category="pickem" (NOT mixed into fixed-odds EV); the model prices them by P(over
+    # the line) on the Pick'em page.
+    for pp in sfd.get("playerProps", []):
+        stats = [str(s).lower().replace(" ", "") for s in (pp.get("stats") or [])]
+        stat = next((DAB_PICKEM_STAT[s] for s in stats if s in DAB_PICKEM_STAT), None)
+        if not stat or pp.get("value") is None:
+            continue
+        rows.append({"book": "dabble", "event_name": name, "home": home, "away": away,
+                     "start_iso": fixture.get("advertisedStart"),
+                     "market_raw": f"pickem {' '.join(stats)}", "fetched_at": fetched,
+                     "category": "pickem", "stat": stat, "kind": pp.get("lineType"),
+                     "player": _strip_team(pp.get("playerName", "")),
+                     "line": float(pp["value"]), "over": None, "under": None,
+                     "single": None, "selection_raw": ""})
     return rows
 
 

@@ -105,6 +105,40 @@ function cmpFilter(){
  });
  var c=document.getElementById('f-count'); if(c)c.textContent=shown+' markets';
 }
+// ---- Pick'em filter + parlay builder ----
+function pkFilter(){
+ var tbl=document.getElementById('pkm'); if(!tbl)return;
+ var stat=(document.getElementById('pk-stat')||{}).value||'all';
+ var strong=(document.getElementById('pk-strong')||{}).checked;
+ var n=0;
+ tbl.querySelectorAll('tbody tr').forEach(function(tr){
+   var ok=true, p=parseFloat(tr.dataset.p);
+   if(stat!=='all' && tr.dataset.stat!==stat) ok=false;
+   if(strong && !(p>=0.55)) ok=false;
+   tr.style.display=ok?'':'none'; if(ok)n++;
+ });
+ var c=document.getElementById('pk-count'); if(c)c.textContent=n+' legs';
+}
+var PK_SLIP=[];
+function addLeg(btn){
+ var tr=btn.closest('tr'); var leg=JSON.parse(tr.dataset.leg);
+ if(PK_SLIP.find(function(l){return l.pl===leg.pl&&l.st===leg.st&&l.ln===leg.ln;}))return;
+ PK_SLIP.push(leg); btn.textContent='added'; btn.disabled=true; renderSlip();
+}
+function rmLeg(i){ PK_SLIP.splice(i,1); renderSlip();
+ document.querySelectorAll('.addleg').forEach(function(b){b.textContent='+ add';b.disabled=false;}); }
+function renderSlip(){
+ var el=document.getElementById('slip'); if(!el)return;
+ if(!PK_SLIP.length){el.className='slip';el.textContent='Slip empty — add legs to build a parlay.';return;}
+ var prod=PK_SLIP.reduce(function(a,l){return a*l.p;},1);
+ var n=PK_SLIP.length; var m=(window.PK_MULT||{})[n];
+ var legsHtml=PK_SLIP.map(function(l,i){return '<span class="chip">'+l.pl+' '+l.sd.toUpperCase()+' '+l.ln+' ('+(l.p*100).toFixed(0)+'%) <a onclick="rmLeg('+i+')">×</a></span>';}).join(' ');
+ var out='<b>'+n+'-leg parlay</b> '+legsHtml+'<div class="slipres">';
+ if(!m){ out+= n<2 ? 'Add at least 2 legs (minimum for a parlay).' : 'No multiplier for '+n+' legs.'; }
+ else { var ev=m*prod-1; out+='combined win prob <b>'+(prod*100).toFixed(1)+'%</b> · multiplier <b>×'+m+'</b> · EV <b class="'+(ev>0?'pos':'neg')+'">'+(ev*100>=0?'+':'')+(ev*100).toFixed(0)+'%</b>'; }
+ out+='</div>';
+ el.className='slip on'; el.innerHTML=out;
+}
 // ---- Scoring match filter ----
 function scFilter(match){
  document.querySelectorAll('section.match').forEach(function(s){
@@ -117,4 +151,7 @@ function showTab(group,name){
  document.querySelectorAll('[data-pane="'+group+'"]').forEach(function(p){
    p.classList.toggle('on', p.dataset.paneName===name);});
 }
-document.addEventListener('DOMContentLoaded', function(){ if(document.getElementById('cmp')) cmpFilter(); });
+document.addEventListener('DOMContentLoaded', function(){
+ if(document.getElementById('cmp')) cmpFilter();
+ if(document.getElementById('pkm')) pkFilter();
+});

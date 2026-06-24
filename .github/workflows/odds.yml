@@ -46,6 +46,9 @@ jobs:
       - name: Price player-points + goals markets
         run: python src/player_points.py price
 
+      - name: Price Dabble Pick'em (model vs line)
+        run: python src/pickem.py
+
       - name: Build odds-comparison dashboard data
         run: python src/compare.py
 

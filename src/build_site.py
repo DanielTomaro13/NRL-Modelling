@@ -89,6 +89,10 @@ def load_inputs():
         sc["comparison"] = json.load(open("reports/comparison.json"))
     except Exception:
         sc["comparison"] = {}
+    try:
+        sc["pickem"] = json.load(open("reports/pickem.json"))
+    except Exception:
+        sc["pickem"] = {}
     return preds, odds, edges, analysis, tries, try_edges, tryinfo, sc
 
 
@@ -155,6 +159,7 @@ def page(title, body, active, updated):
         f'<a class="{ "on" if k==active else "" }" href="{href}">{label}</a>'
         for k, href, label in [("index", "index.html", "Predictions"),
                                ("compare", "compare.html", "Compare odds"),
+                               ("pickem", "pickem.html", "Pick'em"),
                                ("scoring", "scoring.html", "Scoring"),
                                ("analysis", "analysis.html", "Analysis"),
                                ("backtest", "backtest.html", "Backtest"),
@@ -252,6 +257,53 @@ from leakage-safe models, with live bookmaker odds and model-vs-market value.</p
 {''.join(secs)}
 <script src="app.js"></script>"""
     return page(f"NRL Round {rnd} player projections", body, "index", updated)
+
+
+def build_pickem(pickem, updated):
+    rows = (pickem or {}).get("rows", [])
+    mult = (pickem or {}).get("multipliers", {})
+    if not rows:
+        body = """<div class="hero"><h1>Pick'em</h1></div>
+<div class="banner">No Dabble Pick'em lines available right now (they open closer to kickoff).
+This page fills automatically — including Performance Points if Dabble posts them.</div>"""
+        return page("Pick'em", body, "pickem", updated)
+    stats = pickem.get("stats", [])
+    stat_opts = "".join(f'<option value="{esc(s)}">{esc(s)}</option>' for s in stats)
+    mult_txt = " · ".join(f"{k} legs ×{v}" for k, v in sorted(mult.items(), key=lambda x: int(x[0])))
+    trs = []
+    for i, r in enumerate(rows):
+        ps = r.get("p_side") or 0
+        cls = "pos" if ps >= 0.6 else ("warn" if ps < 0.45 else "")
+        proj = r.get("model_proj")
+        trs.append(
+            f'<tr data-stat="{esc(r.get("stat_label"))}" data-p="{ps}" data-leg=\'{esc(json.dumps({"pl":r.get("player"),"st":r.get("stat_label"),"ln":r.get("line"),"sd":r.get("side"),"p":ps}))}\'>'
+            f'<td class="pl"><b>{esc(r.get("player"))}</b><span class="tm">{esc(r.get("team"))}</span></td>'
+            f'<td>{esc(r.get("stat_label"))}</td>'
+            f'<td><b>{esc(str(r.get("side")).upper())} {r.get("line")}</b></td>'
+            f'<td class="mut">{proj if proj is not None else "–"}</td>'
+            f'<td class="{cls}"><b>{ps*100:.0f}%</b></td>'
+            f'<td class="mut">{r.get("fair_side","–")}</td>'
+            f'<td><button class="addleg" onclick="addLeg(this)">+ add</button></td></tr>')
+    body = f"""<div class="hero"><h1>Pick'em <span class="tag">Dabble · model vs line</span></h1>
+<p>Dabble's Pick'em is a multiplier/parlay game (min 2 legs; {esc(mult_txt)}) — there's no single
+price to de-vig, so instead the model judges <b>Dabble's line</b>: its projection, the probability
+of the offered side, and the fair odds. Build a slip from the legs the model backs most — a parlay
+is +EV when <code>multiplier × (product of your win probabilities) &gt; 1</code>.</p></div>
+
+<div class="filters">
+  <label>Stat <select id="pk-stat" onchange="pkFilter()"><option value="all">All stats</option>{stat_opts}</select></label>
+  <label class="chk"><input type="checkbox" id="pk-strong" checked onchange="pkFilter()"> model-backed only (≥55%)</label>
+  <span class="count" id="pk-count"></span>
+</div>
+<div id="slip" class="slip">Slip empty — add legs to build a parlay.</div>
+<div class="tablewrap scrolltable"><table id="pkm"><thead><tr>
+<th class="pl">Player</th><th>Stat</th><th>Pick</th><th>Model proj</th><th>Model P</th>
+<th>Fair</th><th></th></tr></thead><tbody>{''.join(trs)}</tbody></table></div>
+<p class="disclaim">“Model P” is the model's probability of the side Dabble offers. Pick'em isn't fixed
+odds, so this isn't a single-bet EV — use it to find the strongest legs, then the slip shows the
+parlay's combined probability, Dabble multiplier and EV.</p>
+<script>window.PK_MULT={json.dumps(mult)};</script><script src="app.js"></script>"""
+    return page("Pick'em", body, "pickem", updated)
 
 
 def build_compare(comparison, updated):
@@ -617,10 +669,11 @@ def ou_by_book(odds, pid, stat):
 def _points_section(ppoints, points_edges):
     if ppoints.empty:
         return "<p class='mut'>Run the points model to populate.</p>"
-    ev_by = {}
+    ev_by = {}   # best edge per player (points_edges is sorted by EV desc)
     if not points_edges.empty:
         for _, e in points_edges[points_edges.stat == "points"].iterrows():
-            ev_by[e["playerId"]] = e
+            if e["playerId"] not in ev_by:
+                ev_by[e["playerId"]] = e
     secs = []
     grp = ppoints.groupby("matchId") if "matchId" in ppoints else [(0, ppoints)]
     for mid, g in grp:
@@ -632,20 +685,22 @@ def _points_section(ppoints, points_edges):
             if e is not None and e.get("ev_pct") is not None:
                 ev = e["ev_pct"]; credible = 0 < ev <= 40
                 cls = "pos" if credible else ""
-                odds_cell = (f'<td>{e["line"]}</td><td class="{cls}">${e["best_price"]:.2f} '
+                myp = e.get("my_price")
+                odds_cell = (f'<td><b>{myp:.2f}</b></td>' if myp else '<td>–</td>') + (
+                             f'<td>{e["best_side"]}</td><td class="{cls}">${e["best_price"]:.2f} '
                              f'<i>{BOOK_ABBR.get(e["book"], esc(e["book"]))}</i></td>'
                              f'<td class="{cls}"><b>{ev:+.0f}%</b></td>')
             else:
-                odds_cell = '<td>–</td><td>–</td><td>–</td>'
+                odds_cell = '<td>–</td><td>–</td><td>–</td><td>–</td>'
             rows.append(
                 f'<tr><td class="pl"><b>{esc(p["name"])}</b><span class="pos">{esc(p["position"])}</span>'
                 f'<span class="tm">{esc(p["team"])}</span></td>'
                 f'<td><b>{p["exp_points"]:.1f}</b></td><td class="mut">{p["exp_tries"]*4:.1f}</td>'
                 f'<td class="mut">{p["exp_kicker_points"]:.1f}</td>{odds_cell}</tr>')
         secs.append(f"""<section class="match" data-match="{esc(teams)}"><h3>{esc(teams)}</h3>
-<div class="tablewrap"><table><thead><tr><th class="pl">Player</th><th>Exp pts</th>
-<th>from tries</th><th>from kicking</th><th>Line</th><th>Best price</th><th>EV</th></tr></thead>
-<tbody>{''.join(rows)}</tbody></table></div></section>""")
+<div class="tablewrap scrolltable"><table><thead><tr><th class="pl">Player</th><th>Exp pts</th>
+<th>from tries</th><th>from kicking</th><th>My price</th><th>Line</th><th>Best price</th><th>EV</th>
+</tr></thead><tbody>{''.join(rows)}</tbody></table></div></section>""")
     return "".join(secs)
 
 
@@ -856,6 +911,13 @@ margin:6px 0 14px;padding:11px 14px;border:1px solid var(--line);border-radius:1
 .filters select{background:#0f141c;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:6px 9px;font-size:13.5px}
 .filters .chk{cursor:pointer}.filters .count{margin-left:auto;color:var(--mut);font-size:12.5px}
 td.warn{color:var(--warn)}.warn{color:var(--warn)}
+.addleg{background:var(--chip);color:var(--acc);border:1px solid var(--line);border-radius:7px;padding:4px 10px;font-size:12px;cursor:pointer;font-weight:600}
+.addleg[disabled]{color:var(--mut);cursor:default}
+.slip{margin:6px 0 14px;padding:12px 15px;border:1px dashed var(--line);border-radius:12px;color:var(--mut);font-size:13.5px}
+.slip.on{border-style:solid;background:var(--card);color:var(--ink)}
+.slip .chip{display:inline-block;background:var(--chip);border-radius:7px;padding:3px 9px;margin:3px 4px;font-size:12.5px}
+.slip .chip a{color:var(--warn);cursor:pointer;margin-left:5px;font-weight:700}
+.slipres{margin-top:9px;font-size:14px}.slipres .neg{color:#e0605f}
 .tabs{display:flex;gap:6px;margin:4px 0 0;flex-wrap:wrap}
 .tabs button{background:var(--chip);color:var(--mut);border:1px solid var(--line);border-radius:9px;
 padding:7px 14px;font-size:13.5px;cursor:pointer;font-weight:600}
@@ -973,6 +1035,40 @@ function cmpFilter(){
  });
  var c=document.getElementById('f-count'); if(c)c.textContent=shown+' markets';
 }
+// ---- Pick'em filter + parlay builder ----
+function pkFilter(){
+ var tbl=document.getElementById('pkm'); if(!tbl)return;
+ var stat=(document.getElementById('pk-stat')||{}).value||'all';
+ var strong=(document.getElementById('pk-strong')||{}).checked;
+ var n=0;
+ tbl.querySelectorAll('tbody tr').forEach(function(tr){
+   var ok=true, p=parseFloat(tr.dataset.p);
+   if(stat!=='all' && tr.dataset.stat!==stat) ok=false;
+   if(strong && !(p>=0.55)) ok=false;
+   tr.style.display=ok?'':'none'; if(ok)n++;
+ });
+ var c=document.getElementById('pk-count'); if(c)c.textContent=n+' legs';
+}
+var PK_SLIP=[];
+function addLeg(btn){
+ var tr=btn.closest('tr'); var leg=JSON.parse(tr.dataset.leg);
+ if(PK_SLIP.find(function(l){return l.pl===leg.pl&&l.st===leg.st&&l.ln===leg.ln;}))return;
+ PK_SLIP.push(leg); btn.textContent='added'; btn.disabled=true; renderSlip();
+}
+function rmLeg(i){ PK_SLIP.splice(i,1); renderSlip();
+ document.querySelectorAll('.addleg').forEach(function(b){b.textContent='+ add';b.disabled=false;}); }
+function renderSlip(){
+ var el=document.getElementById('slip'); if(!el)return;
+ if(!PK_SLIP.length){el.className='slip';el.textContent='Slip empty — add legs to build a parlay.';return;}
+ var prod=PK_SLIP.reduce(function(a,l){return a*l.p;},1);
+ var n=PK_SLIP.length; var m=(window.PK_MULT||{})[n];
+ var legsHtml=PK_SLIP.map(function(l,i){return '<span class="chip">'+l.pl+' '+l.sd.toUpperCase()+' '+l.ln+' ('+(l.p*100).toFixed(0)+'%) <a onclick="rmLeg('+i+')">×</a></span>';}).join(' ');
+ var out='<b>'+n+'-leg parlay</b> '+legsHtml+'<div class="slipres">';
+ if(!m){ out+= n<2 ? 'Add at least 2 legs (minimum for a parlay).' : 'No multiplier for '+n+' legs.'; }
+ else { var ev=m*prod-1; out+='combined win prob <b>'+(prod*100).toFixed(1)+'%</b> · multiplier <b>×'+m+'</b> · EV <b class="'+(ev>0?'pos':'neg')+'">'+(ev*100>=0?'+':'')+(ev*100).toFixed(0)+'%</b>'; }
+ out+='</div>';
+ el.className='slip on'; el.innerHTML=out;
+}
 // ---- Scoring match filter ----
 function scFilter(match){
  document.querySelectorAll('section.match').forEach(function(s){
@@ -985,7 +1081,10 @@ function showTab(group,name){
  document.querySelectorAll('[data-pane="'+group+'"]').forEach(function(p){
    p.classList.toggle('on', p.dataset.paneName===name);});
 }
-document.addEventListener('DOMContentLoaded', function(){ if(document.getElementById('cmp')) cmpFilter(); });
+document.addEventListener('DOMContentLoaded', function(){
+ if(document.getElementById('cmp')) cmpFilter();
+ if(document.getElementById('pkm')) pkFilter();
+});
 """
 
 
@@ -1003,6 +1102,7 @@ def main():
     open(f"{DOCS}/index.html", "w").write(
         build_index(preds, odds, edges, rnd, updated, sc.get("ppoints")))
     open(f"{DOCS}/compare.html", "w").write(build_compare(sc.get("comparison", {}), updated))
+    open(f"{DOCS}/pickem.html", "w").write(build_pickem(sc.get("pickem", {}), updated))
     open(f"{DOCS}/scoring.html", "w").write(build_scoring(tries, try_edges, tryinfo, sc, odds, updated))
     open(f"{DOCS}/analysis.html", "w").write(
         build_analysis(analysis, tryinfo, sc.get("kinfo", {}), updated))

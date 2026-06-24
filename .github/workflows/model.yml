@@ -74,6 +74,10 @@ jobs:
         run: python src/player_points.py price
         continue-on-error: true
 
+      - name: Price Dabble Pick'em (model vs line)
+        run: python src/pickem.py
+        continue-on-error: true
+
       - name: Build odds-comparison dashboard data
         run: python src/compare.py
         continue-on-error: true
