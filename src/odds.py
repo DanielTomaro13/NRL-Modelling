@@ -512,6 +512,16 @@ def dabble_fixture_rows(creq, headers, fixture):
                              "line": None, "over": None, "under": None,
                              "single": float(pr), "selection_raw": nm})
             continue
+        # genuine fixed-odds player-points alt-lines: "To Score N+ Points" (1-way over).
+        # These have REAL prices (e.g. 8+ @ 1.22), unlike the Pick'em "points" lines.
+        mpts = re.match(r"sportcast_to_score_(\d+)_plus_points$", rt)
+        if mpts:
+            n = int(mpts.group(1))
+            for nm, pr in outs:
+                rows.append({**base, "category": "player", "stat": "points", "kind": "pts_plus",
+                             "player": _strip_team(nm), "line": n - 0.5, "over": None,
+                             "under": None, "single": float(pr), "selection_raw": nm})
+            continue
         # player stat over/under markets ("<Player> points 7.5", "<Player> Tackles", ...)
         player, stat = classify_player_prop(mname, team_keys)
         if stat:

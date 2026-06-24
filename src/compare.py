@@ -94,6 +94,31 @@ def main():
                              "best_book": bk, "best": bp,
                              "ev": round((mp * bp - 1) * 100, 1) if bp else None})
 
+    # ---- fixed-odds player-points alt-lines: Dabble "To Score N+ Points" (1-way over) ----
+    if len(ppdf):
+        pts = od[(od.stat == "points") & (od.get("kind") == "pts_plus")
+                 & od.single.notna() & od.playerId.notna()]
+        for (pid, line), g in pts.groupby(["playerId", "line"]):
+            if pid not in ppdf.index:
+                continue
+            pr = ppdf.loc[pid]
+            if getattr(pr, "ndim", 1) > 1:
+                pr = pr.iloc[0]
+            lt, lg, lfg = float(pr["lt"]), float(pr["lg"]), float(pr["lfg"])
+            pmf = PP.points_pmf(lt, lg, lfg)
+            line = float(line)
+            mp = sum(p for v, p in pmf.items() if v > line)        # P(points > line)
+            books = {r["book"]: float(r["single"]) for _, r in g.iterrows()}
+            bk, bp = _best(books)
+            match, team = match_of(pid)
+            rows.append({"match": match, "player": pr["name"], "team": team,
+                         "mkey": "points", "market": "Player Points",
+                         "line": int(line + 0.5), "my_p": round(mp, 3),
+                         "my_fair": round(1 / mp, 2) if mp > 1e-9 else None,
+                         "books": {b: round(v, 2) for b, v in books.items()},
+                         "best_book": bk, "best": bp,
+                         "ev": round((mp * bp - 1) * 100, 1) if bp else None})
+
     # ---- over/under markets (show the OVER selection) ----
     ou = od[(od.category == "player") & od.over.notna() & od.playerId.notna() & od.line.notna()]
     for (pid, stat, line), g in ou.groupby(["playerId", "stat", "line"]):
