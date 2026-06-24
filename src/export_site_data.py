@@ -101,6 +101,48 @@ def build_scoring():
     return {"points": points, "tries": tries}
 
 
+def _read_json(path):
+    try:
+        return json.load(open(path))
+    except Exception:
+        return {}
+
+
+def build_backtest():
+    """Out-of-sample accuracy: try-scorer classification + per-stat regression MAE."""
+    analysis = _read_json("reports/analysis.json")
+    ts = _read_json("reports/tryscorer.json")
+    abt = analysis.get("backtest", {})
+    tbt = ts.get("backtest", {})
+
+    tries = None
+    if tbt:
+        m = tbt.get("model", {})
+        rel = tbt.get("reliability", {})
+        tries = {
+            "n_test": tbt.get("n_test"), "base_rate": tbt.get("base_rate"),
+            "auc": m.get("auc"), "brier": m.get("brier"), "logloss": m.get("logloss"),
+            "auc_baseline": (tbt.get("baseline_trailing5") or {}).get("auc"),
+            "calibration_error": tbt.get("calibration_error"),
+            "reliability": {"pred": rel.get("pred", []), "emp": rel.get("emp", [])},
+        }
+    # per-stat regression: model MAE vs trailing-5 baseline + improvement
+    regression = []
+    for r in abt.get("summary", []):
+        regression.append({
+            "target": r.get("target"), "label": r.get("label"),
+            "mae_model": r.get("MAE_model"), "mae_base": r.get("MAE_base_r5"),
+            "gain_pct": r.get("gain_pct"), "n": r.get("n"),
+        })
+    return {
+        "holdouts": abt.get("holdouts") or tbt.get("holdouts") or [],
+        "n_test": abt.get("n_test") or tbt.get("n_test"),
+        "tries": tries,
+        "regression": regression,
+        "generated": analysis.get("generated"),
+    }
+
+
 def main():
     if os.path.isdir(OUT):
         shutil.rmtree(OUT)
@@ -118,6 +160,7 @@ def main():
     json.dump(meta, open(f"{OUT}/meta.json", "w"))
     json.dump(build_predictions(), open(f"{OUT}/predictions.json", "w"))
     json.dump(build_scoring(), open(f"{OUT}/scoring.json", "w"))
+    json.dump(build_backtest(), open(f"{OUT}/backtest.json", "w"))
 
     # reuse the rich JSON already produced by compare.py / pickem.py verbatim
     for name in ("comparison", "pickem"):
