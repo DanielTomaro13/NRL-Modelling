@@ -348,13 +348,18 @@ tackle / metre / points lines open closer to kickoff. This dashboard fills autom
         ev_cls = "pos" if (ev is not None and 0 < ev <= 40) else ("warn" if (ev or 0) > 40 else "")
         line = "" if r.get("line") is None else f'{r["line"]:g}'
         cells = "".join(price_cell(r, k) for k, _ in BOOKS)
+        myp = r.get("my_p")
+        rk = "|".join(str(r.get(k, "")) for k in ("match", "market", "player", "line"))
+        manual = (f'<td class="manin"><input class="mp" inputmode="decimal" placeholder="$"'
+                  f' data-myp="{myp if myp is not None else ""}" data-rk="{esc(rk)}"'
+                  f' oninput="cmpManual(this)"></td><td class="mev" data-rk="{esc(rk)}"></td>')
         trs.append(
             f'<tr data-match="{esc(r.get("match",""))}" data-market="{esc(r.get("market",""))}" '
             f'data-ev="{ev if ev is not None else ""}">'
             f'<td class="pl"><b>{esc(r.get("player"))}</b><span class="tm">{esc(r.get("team"))}</span></td>'
             f'<td>{esc(r.get("market"))}</td><td class="mut">{line}</td>'
             f'<td><b>{r.get("my_fair","–")}</b></td>{cells}'
-            f'<td class="{ev_cls}"><b>{ev_txt}</b></td></tr>')
+            f'<td class="{ev_cls}"><b>{ev_txt}</b></td>{manual}</tr>')
     body = f"""<div class="hero"><h1>Compare odds</h1>
 <p>Every player market we can price, with <b>my price</b> (the model's fair odds) next to each
 book's live price — Sportsbet, Ladbrokes, TAB, PointsBet and Dabble — best highlighted. Positive EV
@@ -369,10 +374,12 @@ book's live price — Sportsbet, Ladbrokes, TAB, PointsBet and Dabble — best h
 </div>
 <div class="tablewrap scrolltable"><table id="cmp"><thead><tr>
 <th class="pl">Player</th><th>Market</th><th>Line</th><th>My price</th>
-{book_head}<th>Best EV</th></tr></thead>
+{book_head}<th>Best EV</th><th title="Type a price you see elsewhere (e.g. Dabble) to value it against the model">Your price</th><th>Your EV</th></tr></thead>
 <tbody>{''.join(trs)}</tbody></table></div>
 <p class="disclaim">“My price” is the model's fair odds (1 ÷ model probability), no margin. Very large EV
-usually means a team-list or name mismatch — “hide longshots” filters those out by default.</p>
+usually means a team-list or name mismatch — “hide longshots” filters those out by default.
+<b>Your price</b>: for any book we can't pull live (Dabble is iOS-only), type the decimal price you
+see and “Your EV” shows the model's edge instantly — green is +EV. Entries are saved in your browser.</p>
 <script src="app.js"></script>"""
     return page("Compare odds", body, "compare", updated)
 
@@ -925,6 +932,12 @@ margin:6px 0 14px;padding:11px 14px;border:1px solid var(--line);border-radius:1
 .filters select{background:#0f141c;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:6px 9px;font-size:13.5px}
 .filters .chk{cursor:pointer}.filters .count{margin-left:auto;color:var(--mut);font-size:12.5px}
 td.warn{color:var(--warn)}.warn{color:var(--warn)}
+input.mp{width:62px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);font-size:13px}
+input.mp:focus{outline:none;border-color:var(--acc)}
+td.mev{font-weight:700;font-size:13px}td.mev.pos{color:var(--pos)}td.mev.neg{color:var(--mut)}
+input.lnin{width:56px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);font-size:13px;text-align:center}
+input.lnin:focus{outline:none;border-color:var(--acc)}
+td.dab{font-size:11px;color:var(--mut)}
 .addleg{background:var(--chip);color:var(--acc);border:1px solid var(--line);border-radius:7px;padding:4px 10px;font-size:12px;cursor:pointer;font-weight:600}
 .addleg[disabled]{color:var(--mut);cursor:default}
 .slip{margin:6px 0 14px;padding:12px 15px;border:1px dashed var(--line);border-radius:12px;color:var(--mut);font-size:13.5px}
@@ -1052,6 +1065,25 @@ function cmpFilter(){
  });
  var c=document.getElementById('f-count'); if(c)c.textContent=shown+' markets';
 }
+// ---- Compare: manual price -> EV vs model (for books we can't pull live, e.g. Dabble) ----
+function cmpManual(inp){
+ var rk=inp.dataset.rk;
+ var cell=document.querySelector('.mev[data-rk="'+(window.CSS&&CSS.escape?CSS.escape(rk):rk)+'"]');
+ var myp=parseFloat(inp.dataset.myp), price=parseFloat(inp.value);
+ try{ price>0 ? localStorage.setItem('cmpmp:'+rk, inp.value) : localStorage.removeItem('cmpmp:'+rk); }catch(e){}
+ if(!cell) return;
+ if(!(price>0)){ cell.textContent=''; cell.className='mev'; return; }
+ if(!(myp>0)){ cell.textContent='?'; cell.className='mev mut'; return; }
+ var ev=myp*price-1;
+ cell.textContent=(ev>=0?'+':'')+(ev*100).toFixed(0)+'%';
+ cell.className='mev '+(ev>0?'pos':'neg');
+}
+function cmpRestore(){
+ document.querySelectorAll('#cmp input.mp').forEach(function(inp){
+   var v=null; try{ v=localStorage.getItem('cmpmp:'+inp.dataset.rk); }catch(e){}
+   if(v){ inp.value=v; cmpManual(inp); }
+ });
+}
 // ---- Pick'em filter + parlay builder ----
 function pkFilter(){
  var tbl=document.getElementById('pkm'); if(!tbl)return;
@@ -1103,7 +1135,7 @@ function showTab(group,name){
    p.classList.toggle('on', p.dataset.paneName===name);});
 }
 document.addEventListener('DOMContentLoaded', function(){
- if(document.getElementById('cmp')) cmpFilter();
+ if(document.getElementById('cmp')){ cmpFilter(); cmpRestore(); }
  if(document.getElementById('pkm')) pkFilter();
 });
 """

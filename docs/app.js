@@ -105,6 +105,25 @@ function cmpFilter(){
  });
  var c=document.getElementById('f-count'); if(c)c.textContent=shown+' markets';
 }
+// ---- Compare: manual price -> EV vs model (for books we can't pull live, e.g. Dabble) ----
+function cmpManual(inp){
+ var rk=inp.dataset.rk;
+ var cell=document.querySelector('.mev[data-rk="'+(window.CSS&&CSS.escape?CSS.escape(rk):rk)+'"]');
+ var myp=parseFloat(inp.dataset.myp), price=parseFloat(inp.value);
+ try{ price>0 ? localStorage.setItem('cmpmp:'+rk, inp.value) : localStorage.removeItem('cmpmp:'+rk); }catch(e){}
+ if(!cell) return;
+ if(!(price>0)){ cell.textContent=''; cell.className='mev'; return; }
+ if(!(myp>0)){ cell.textContent='?'; cell.className='mev mut'; return; }
+ var ev=myp*price-1;
+ cell.textContent=(ev>=0?'+':'')+(ev*100).toFixed(0)+'%';
+ cell.className='mev '+(ev>0?'pos':'neg');
+}
+function cmpRestore(){
+ document.querySelectorAll('#cmp input.mp').forEach(function(inp){
+   var v=null; try{ v=localStorage.getItem('cmpmp:'+inp.dataset.rk); }catch(e){}
+   if(v){ inp.value=v; cmpManual(inp); }
+ });
+}
 // ---- Pick'em filter + parlay builder ----
 function pkFilter(){
  var tbl=document.getElementById('pkm'); if(!tbl)return;
@@ -156,6 +175,6 @@ function showTab(group,name){
    p.classList.toggle('on', p.dataset.paneName===name);});
 }
 document.addEventListener('DOMContentLoaded', function(){
- if(document.getElementById('cmp')) cmpFilter();
+ if(document.getElementById('cmp')){ cmpFilter(); cmpRestore(); }
  if(document.getElementById('pkm')) pkFilter();
 });
