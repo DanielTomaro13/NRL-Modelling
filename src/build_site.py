@@ -270,37 +270,49 @@ This page fills automatically — including Performance Points if Dabble posts t
     stats = pickem.get("stats", [])
     stat_opts = "".join(f'<option value="{esc(s)}">{esc(s)}</option>' for s in stats)
     mult_txt = " · ".join(f"{k} legs ×{v}" for k, v in sorted(mult.items(), key=lambda x: int(x[0])))
+
+    def side_cell(r, side):
+        p = r.get(f"p_{side}") or 0
+        fair = r.get(f"fair_{side}")
+        offered = side in (r.get("offered") or ["over", "under"])
+        lean = (r.get("lean") or "").lower() == side
+        leg = json.dumps({"pl": r.get("player"), "st": r.get("stat_label"),
+                          "ln": r.get("line"), "sd": side, "p": p})
+        cls = "pos" if (lean and p >= 0.6) else ("mut" if not offered else "")
+        btn = (f'<button class="addleg" data-leg=\'{esc(leg)}\' onclick="addLeg(this)">+</button>'
+               if offered else '')
+        return (f'<td class="{cls}"><b>{p*100:.0f}%</b> '
+                f'<span class="mut">${fair if fair else "–"}</span> {btn}</td>')
+
     trs = []
-    for i, r in enumerate(rows):
-        ps = r.get("p_side") or 0
-        cls = "pos" if ps >= 0.6 else ("warn" if ps < 0.45 else "")
+    for r in rows:
         proj = r.get("model_proj")
+        lean_p = r.get("lean_p") or 0
         trs.append(
-            f'<tr data-stat="{esc(r.get("stat_label"))}" data-p="{ps}" data-leg=\'{esc(json.dumps({"pl":r.get("player"),"st":r.get("stat_label"),"ln":r.get("line"),"sd":r.get("side"),"p":ps}))}\'>'
+            f'<tr data-stat="{esc(r.get("stat_label"))}" data-p="{lean_p}">'
             f'<td class="pl"><b>{esc(r.get("player"))}</b><span class="tm">{esc(r.get("team"))}</span></td>'
-            f'<td>{esc(r.get("stat_label"))}</td>'
-            f'<td><b>{esc(str(r.get("side")).upper())} {r.get("line")}</b></td>'
+            f'<td>{esc(r.get("stat_label"))}</td><td><b>{r.get("line")}</b></td>'
             f'<td class="mut">{proj if proj is not None else "–"}</td>'
-            f'<td class="{cls}"><b>{ps*100:.0f}%</b></td>'
-            f'<td class="mut">{r.get("fair_side","–")}</td>'
-            f'<td><button class="addleg" onclick="addLeg(this)">+ add</button></td></tr>')
+            f'{side_cell(r, "over")}{side_cell(r, "under")}</tr>')
     body = f"""<div class="hero"><h1>Pick'em <span class="tag">Dabble · model vs line</span></h1>
 <p>Dabble's Pick'em is a multiplier/parlay game (min 2 legs; {esc(mult_txt)}) — there's no single
-price to de-vig, so instead the model judges <b>Dabble's line</b>: its projection, the probability
-of the offered side, and the fair odds. Build a slip from the legs the model backs most — a parlay
-is +EV when <code>multiplier × (product of your win probabilities) &gt; 1</code>.</p></div>
+price to de-vig, so instead the model judges <b>Dabble's line</b>. Each row shows the model's
+projection and its <b>price</b> (fair odds) for both Over and More/Less — the side the model leans
+is highlighted. Add legs (＋) to build a slip; a parlay is +EV when
+<code>multiplier × (product of your win probabilities) &gt; 1</code>.</p></div>
 
 <div class="filters">
   <label>Stat <select id="pk-stat" onchange="pkFilter()"><option value="all">All stats</option>{stat_opts}</select></label>
-  <label class="chk"><input type="checkbox" id="pk-strong" checked onchange="pkFilter()"> model-backed only (≥55%)</label>
+  <label class="chk"><input type="checkbox" id="pk-strong" onchange="pkFilter()"> strong leans only (≥60%)</label>
   <span class="count" id="pk-count"></span>
 </div>
 <div id="slip" class="slip">Slip empty — add legs to build a parlay.</div>
 <div class="tablewrap scrolltable"><table id="pkm"><thead><tr>
-<th class="pl">Player</th><th>Stat</th><th>Pick</th><th>Model proj</th><th>Model P</th>
-<th>Fair</th><th></th></tr></thead><tbody>{''.join(trs)}</tbody></table></div>
-<p class="disclaim">“Model P” is the model's probability of the side Dabble offers. Pick'em isn't fixed
-odds, so this isn't a single-bet EV — use it to find the strongest legs, then the slip shows the
+<th class="pl">Player</th><th>Stat</th><th>Line</th><th>Model proj</th>
+<th>Over — P · price</th><th>Under — P · price</th></tr></thead>
+<tbody>{''.join(trs)}</tbody></table></div>
+<p class="disclaim">“Price” is the model's fair odds (1 ÷ model probability) for that side. Pick'em isn't
+fixed odds, so this isn't a single-bet EV — use it to find the strongest legs; the slip shows the
 parlay's combined probability, Dabble multiplier and EV.</p>
 <script>window.PK_MULT={json.dumps(mult)};</script><script src="app.js"></script>"""
     return page("Pick'em", body, "pickem", updated)
@@ -1051,12 +1063,12 @@ function pkFilter(){
 }
 var PK_SLIP=[];
 function addLeg(btn){
- var tr=btn.closest('tr'); var leg=JSON.parse(tr.dataset.leg);
- if(PK_SLIP.find(function(l){return l.pl===leg.pl&&l.st===leg.st&&l.ln===leg.ln;}))return;
- PK_SLIP.push(leg); btn.textContent='added'; btn.disabled=true; renderSlip();
+ var leg=JSON.parse(btn.dataset.leg);
+ if(PK_SLIP.find(function(l){return l.pl===leg.pl&&l.st===leg.st&&l.ln===leg.ln;}))return; // one side per line
+ PK_SLIP.push(leg); btn.textContent='✓'; btn.disabled=true; renderSlip();
 }
 function rmLeg(i){ PK_SLIP.splice(i,1); renderSlip();
- document.querySelectorAll('.addleg').forEach(function(b){b.textContent='+ add';b.disabled=false;}); }
+ document.querySelectorAll('.addleg').forEach(function(b){b.textContent='+';b.disabled=false;}); }
 function renderSlip(){
  var el=document.getElementById('slip'); if(!el)return;
  if(!PK_SLIP.length){el.className='slip';el.textContent='Slip empty — add legs to build a parlay.';return;}

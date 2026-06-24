@@ -121,12 +121,12 @@ function pkFilter(){
 }
 var PK_SLIP=[];
 function addLeg(btn){
- var tr=btn.closest('tr'); var leg=JSON.parse(tr.dataset.leg);
- if(PK_SLIP.find(function(l){return l.pl===leg.pl&&l.st===leg.st&&l.ln===leg.ln;}))return;
- PK_SLIP.push(leg); btn.textContent='added'; btn.disabled=true; renderSlip();
+ var leg=JSON.parse(btn.dataset.leg);
+ if(PK_SLIP.find(function(l){return l.pl===leg.pl&&l.st===leg.st&&l.ln===leg.ln;}))return; // one side per line
+ PK_SLIP.push(leg); btn.textContent='✓'; btn.disabled=true; renderSlip();
 }
 function rmLeg(i){ PK_SLIP.splice(i,1); renderSlip();
- document.querySelectorAll('.addleg').forEach(function(b){b.textContent='+ add';b.disabled=false;}); }
+ document.querySelectorAll('.addleg').forEach(function(b){b.textContent='+';b.disabled=false;}); }
 function renderSlip(){
  var el=document.getElementById('slip'); if(!el)return;
  if(!PK_SLIP.length){el.className='slip';el.textContent='Slip empty — add legs to build a parlay.';return;}

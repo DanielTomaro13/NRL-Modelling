@@ -69,38 +69,44 @@ def main():
     pi = pdf.set_index("playerId") if len(pdf) else pdf
     ri = rdf.set_index("playerId") if len(rdf) else rdf
 
-    rows = []
+    # one row per (player, stat, line) carrying BOTH over and under + the sides Dabble offers
+    groups = {}
     for _, r in pk.iterrows():
-        pid, stat, line = r["playerId"], r["stat"], float(r["line"])
-        side = (r.get("kind") or "over").lower()
+        key = (r["playerId"], r["stat"], float(r["line"]))
+        g = groups.setdefault(key, {"player": r["player"], "event": r.get("event_name"),
+                                    "sides": set()})
+        g["sides"].add((r.get("kind") or "over").lower())
+    rows = []
+    for (pid, stat, line), g in groups.items():
         tr = _one(ti.loc[pid]) if (len(ti) and pid in ti.index) else None
         pr = _one(pi.loc[pid]) if (len(pi) and pid in pi.index) else None
         rr = _one(ri.loc[pid]) if (len(ri) and pid in ri.index) else None
         p_over = _p_over(stat, line, tr, pr, rr, disp)
         if p_over is None:
             continue
-        p_side = p_over if side == "over" else 1 - p_over
+        p_under = 1 - p_over
         proj = _proj(stat, tr, pr, rr)
         team = None
         for src in (pr, tr, rr):
             if src is not None and src.get("team"):
                 team = src.get("team"); break
-        rows.append({"player": r["player"], "team": team, "stat": stat,
-                     "stat_label": STAT_LABEL.get(stat, stat),
-                     "event": r.get("event_name"), "line": line, "side": side,
-                     "model_proj": proj, "p_over": round(p_over, 3),
-                     "p_side": round(p_side, 3),
-                     "fair_side": round(1 / p_side, 2) if p_side > 1e-9 else None,
+        rows.append({"player": g["player"], "team": team, "stat": stat,
+                     "stat_label": STAT_LABEL.get(stat, stat), "event": g["event"],
+                     "line": line, "offered": sorted(g["sides"]),
+                     "model_proj": proj,
+                     "p_over": round(p_over, 3), "p_under": round(p_under, 3),
+                     "fair_over": round(1 / p_over, 2) if p_over > 1e-9 else None,
+                     "fair_under": round(1 / p_under, 2) if p_under > 1e-9 else None,
                      "lean": "OVER" if p_over >= 0.5 else "UNDER",
-                     "lean_p": round(max(p_over, 1 - p_over), 3)})
-    # sort by how confidently the model backs the offered side (best parlay legs first)
-    rows.sort(key=lambda r: r["p_side"], reverse=True)
+                     "lean_p": round(max(p_over, p_under), 3)})
+    # sort by player, then stat, then line (so a player's lines are grouped)
+    rows.sort(key=lambda r: (str(r["player"]).lower(), r["stat_label"], r["line"]))
     out = {"generated": pd.Timestamp.now("UTC").isoformat(), "multipliers": MULTIPLIERS,
            "rows": rows, "stats": sorted(set(r["stat_label"] for r in rows))}
     json.dump(out, open("reports/pickem.json", "w"))
-    n_strong = sum(1 for r in rows if r["p_side"] >= 0.6)
-    print(f"Wrote reports/pickem.json: {len(rows)} Pick'em legs "
-          f"({n_strong} where model backs the offered side >=60%)")
+    n_strong = sum(1 for r in rows if r["lean_p"] >= 0.6)
+    print(f"Wrote reports/pickem.json: {len(rows)} Pick'em lines "
+          f"({n_strong} with a model lean >=60%)")
     by = {}
     for r in rows:
         by[r["stat_label"]] = by.get(r["stat_label"], 0) + 1
