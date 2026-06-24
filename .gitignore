@@ -17,3 +17,13 @@ reports/_synth_*
 
 # Local editor / preview tooling
 .claude/
+
+# Secrets / bookmaker tokens — NEVER commit (use env vars or GitHub secrets)
+.env
+.env.*
+!.env.example
+*.token
+*secret*
+tokens.json
+dabble_token*
+tab_token*
