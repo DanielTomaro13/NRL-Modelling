@@ -416,6 +416,13 @@ def _strip_team(name):
     return re.sub(r"\s*\([^)]*\)\s*$", "", name or "").strip()
 
 
+def _strip_alt_suffix(name):
+    """'L Siegwalt 6+ Points' / 'Latrell Siegwalt to Score 8+ Points' -> player name."""
+    s = _strip_team(name)
+    s = re.sub(r"\s*(to\s+score\s+)?\d+\s*\+.*$", "", s, flags=re.I)
+    return s.strip()
+
+
 def _lad_iso(s):
     try:
         return dt.datetime.fromisoformat(s.replace("Z", "+00:00")).replace(
@@ -777,35 +784,25 @@ def fetch_tab():
                                  "player": _strip_team(nm), "line": None, "over": None,
                                  "under": None, "single": float(pr), "selection_raw": nm})
                 continue
-            # Player points (and other player props). TAB posts these either as alt-line
-            # "<Player> to Score N+ Points" selections, or as Over/Under propositions on a
-            # "<Player> Points" market. Detect the stat from the market or proposition name.
-            mstat = classify_player_prop(bo, team_keys)[1]
+            # Player stat markets: betOption like "Player Points Scored", propositions
+            # "<Player> N+ Points" (1-way alt-line ladder, player named "L Siegwalt").
+            # The betOption's "Player" prefix isn't a name, so derive the stat from its
+            # phrase and take the player from each proposition (stripping the "N+ …" tail).
+            if not bo.lower().startswith("player"):
+                continue
+            stat = next((k for k, pat in STAT_PHRASES if re.search(pat, bo.lower())), None)
+            if not stat:
+                continue
             for p in props:
                 pr = p.get("returnWin")
                 nm = (p.get("name") or "").strip()
-                if not pr or not nm:
-                    continue
-                stat = mstat or classify_player_prop(nm, team_keys)[1]
-                if not stat:
-                    continue
                 ln = _plus_line(nm)
-                if ln is not None:   # "<Player> to Score N+ Points" 1-way over
-                    rows.append({**base, "category": "player", "stat": stat, "kind": "pts_plus",
-                                 "player": _strip_team(nm), "line": ln, "over": None,
-                                 "under": None, "single": float(pr), "selection_raw": nm})
+                if not pr or ln is None:   # only alt-line "N+" props (skips "0 Tries" etc.)
                     continue
-                low = nm.lower()
-                side = "over" if low.startswith("over") or " over " in low else (
-                    "under" if low.startswith("under") or " under " in low else None)
-                hcap = p.get("handicap") or p.get("line")
-                if side and hcap is not None:   # Over/Under <line> propositions
-                    player = classify_player_prop(bo, team_keys)[0] or _strip_team(nm)
-                    rows.append({**base, "category": "player", "stat": stat, "player": player,
-                                 "line": float(hcap),
-                                 "over": float(pr) if side == "over" else None,
-                                 "under": float(pr) if side == "under" else None,
-                                 "single": None, "selection_raw": nm})
+                player = _strip_alt_suffix(nm)
+                rows.append({**base, "category": "player", "stat": stat, "kind": "pts_plus",
+                             "player": player, "line": ln, "over": None, "under": None,
+                             "single": float(pr), "selection_raw": nm})
     print(f"  [tab] {len(d.get('matches', []))} matches, {len(rows)} market rows")
     return rows
 
