@@ -34,6 +34,14 @@ git pull --rebase --autostash origin main || { echo "$(ts) pull failed"; exit 1;
 "$PY" src/export_site_data.py || echo "$(ts) export nonzero"
 "$PY" src/build_site.py      || { echo "$(ts) build_site failed"; exit 1; }
 
+# SuperCoach feed for nrl24-0.com — refresh at most once a day (prices/news move
+# weekly-ish; it pulls a per-round score series, heavier than the odds scrape).
+SC=reports/site/supercoach.json
+if [ ! -f "$SC" ] || [ -n "$(find "$SC" -mmin +1200 2>/dev/null)" ]; then
+  echo "$(ts) refreshing supercoach…"
+  "$PY" src/supercoach.py || echo "$(ts) supercoach scrape failed (keeping previous)"
+fi
+
 git add -A reports docs
 if git diff --cached --quiet; then
   echo "$(ts) no changes — nothing to push"; exit 0
