@@ -1,8 +1,9 @@
 name: Daily model pipeline
 
-# Full pipeline once a day: ingest new results -> features -> train + calibrate
-# -> scrape confirmed team lists -> predict the round -> fetch odds -> price
-# -> rebuild the GitHub Pages site. Commits the refreshed model, predictions and site.
+# Model brain, once a day: ingest new results -> features -> train + calibrate ->
+# scrape confirmed team lists -> predict the round. Commits the refreshed model and
+# predictions. Odds/pricing/site/redeploy are NOT here — the AU books (Sportsbet/TAB)
+# geo-block GitHub's US runners, so those run from a local AU cron (scripts/odds-cron.sh).
 
 on:
   schedule:
@@ -53,52 +54,21 @@ jobs:
       - name: Player-points model (try + kicker) + backtest + predict
         run: python src/player_points.py
 
-      - name: Fetch Sportsbet, Ladbrokes, TAB, PointsBet (+ Dabble) odds
-        run: python src/odds.py
-        continue-on-error: true
-        env:
-          DABBLE_COOKIE: ${{ secrets.DABBLE_COOKIE }}
-          TAB_ACCESS_TOKEN: ${{ secrets.TAB_ACCESS_TOKEN }}
-          TAB_CLIENT_ID: ${{ secrets.TAB_CLIENT_ID }}
-          TAB_CLIENT_SECRET: ${{ secrets.TAB_CLIENT_SECRET }}
-
-      - name: Price stat markets + compute edges
-        run: python src/pricing.py price
-        continue-on-error: true
-
-      - name: Price try-scorer markets
-        run: python src/pricing.py tries
-        continue-on-error: true
-
-      - name: Price player-points + goals markets
-        run: python src/player_points.py price
-        continue-on-error: true
-
-      - name: Price Dabble Pick'em (model vs line)
-        run: python src/pickem.py
-        continue-on-error: true
-
-      - name: Build odds-comparison dashboard data
-        run: python src/compare.py
-        continue-on-error: true
-
-      - name: Export JSON bundle for nrl24-0.com
-        run: python src/export_site_data.py
-        continue-on-error: true
-
-      - name: Build site
-        run: python src/build_site.py
-
+      # Odds, pricing, the site bundle and the nrl24-0.com redeploy are intentionally
+      # NOT run here. The AU books (Sportsbet/TAB) geo-block GitHub's US runners, so
+      # the odds→price→site→redeploy pipeline runs from a local AU cron every 3h
+      # (scripts/odds-cron.sh, all five books fresh). This job only updates the model
+      # and predictions; the next cron run prices them and rebuilds the site.
       - name: Commit results
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A data models reports docs
+          git add -A data models reports
           if git diff --cached --quiet; then
             echo "No changes to commit."
             exit 0
           fi
-          git commit -m "Daily model run: predictions, odds, site [skip ci]"
+          git commit -m "Daily model run: predictions [skip ci]"
 
           # Push with rebase-retry: regenerated artifacts always win on conflict.
           for i in 1 2 3 4 5; do
@@ -112,15 +82,3 @@ jobs:
           done
           echo "Failed to push after 5 attempts." >&2
           exit 1
-
-      - name: Trigger nrl24-0.com redeploy (fresh model data)
-        if: ${{ env.NRL240_DISPATCH_TOKEN != '' }}
-        env:
-          NRL240_DISPATCH_TOKEN: ${{ secrets.NRL240_DISPATCH_TOKEN }}
-        run: |
-          curl -sf -X POST \
-            -H "Authorization: Bearer $NRL240_DISPATCH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/DanielTomaro13/NRL-24-0/dispatches \
-            -d '{"event_type":"model-data-updated"}' \
-            && echo "Dispatched model-data-updated to NRL-24-0" || echo "Dispatch skipped/failed"
