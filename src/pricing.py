@@ -24,6 +24,7 @@ import sys, json, math
 import numpy as np
 import pandas as pd
 from scipy.stats import norm
+import tracks as T
 
 TARGETS = ["runsHitup", "runs", "runMetres", "postContactMetres", "tackles", "perf_points"]
 STAT_TO_TARGET = {
@@ -39,21 +40,33 @@ SIGMA_FLOOR = {"runsHitup": 1.0, "runs": 1.8, "runMetres": 15.0,
 
 
 # --------------------------------------------------------------------------- calibration
-def calibrate_dispersion(features="data/processed/features.parquet",
-                         model="models/nrl_models.joblib",
-                         meta="data/processed/feature_cols.json",
-                         out=DISP_PATH, holdout_seasons=(2023, 2024, 2025)):
-    """Fit sigma(mu) = alpha + beta*mu per target from out-of-time residuals."""
+def calibrate_dispersion(track=None, features=None, model=None, meta=None, out=None):
+    """Fit sigma(mu) = alpha + beta*mu per target from out-of-time residuals.
+
+    Residuals are taken from the track's holdout seasons, except for provisional
+    targets (e.g. NRLW run metres, only captured from train_max) which calibrate
+    on that single season.
+    """
     import joblib
+    track = track or T.current()
+    features = features or T.proc("features.parquet", track)
+    model = model or T.model("nrl_models.joblib", track)
+    meta = meta or T.proc("feature_cols.json", track)
+    out = out or T.model("dispersion.json", track)
+
     df = pd.read_parquet(features)
     feats = json.load(open(meta))["features"]
     bundle = joblib.load(model)
-    te = df[df.season.isin(holdout_seasons)].copy()
-    X = te[feats + ["position"]].copy()
-    X["position"] = X["position"].astype("category")
+    avail = set(bundle["models"])
 
     disp = {}
     for t in TARGETS:
+        if t not in avail:
+            continue  # target not modelled for this track
+        seasons = (track.train_max,) if t in track.provisional_targets else track.holdouts
+        te = df[df.season.isin(seasons)].copy()
+        X = te[feats + ["position"]].copy()
+        X["position"] = X["position"].astype("category")
         pred = np.clip(bundle["models"][t].predict(X), 0, None)
         resid = te[t].values - pred
         # bin by predicted decile; robust per-bin residual std; fit sigma ~ mu
@@ -84,7 +97,8 @@ def calibrate_dispersion(features="data/processed/features.parquet",
     return disp
 
 
-def load_dispersion(path=DISP_PATH):
+def load_dispersion(path=None):
+    path = path or T.model("dispersion.json")
     try:
         return json.load(open(path))
     except FileNotFoundError:
@@ -146,10 +160,12 @@ def ev_per_dollar(p_win, p_push, price):
 
 
 # --------------------------------------------------------------------------- price a snapshot
-def price_snapshot(odds_path="reports/odds_snapshot.parquet",
-                   preds_path="reports/round_predictions.parquet",
-                   disp_path=DISP_PATH,
-                   out_parquet="reports/edges.parquet", out_json="reports/edges.json"):
+def price_snapshot(odds_path=None, preds_path=None, disp_path=None,
+                   out_parquet=None, out_json=None):
+    odds_path = odds_path or T.report("odds_snapshot.parquet")
+    preds_path = preds_path or T.report("round_predictions.parquet")
+    out_parquet = out_parquet or T.report("edges.parquet")
+    out_json = out_json or T.report("edges.json")
     odds = pd.read_parquet(odds_path)
     preds = pd.read_parquet(preds_path)
     disp = load_dispersion(disp_path)
@@ -217,6 +233,64 @@ def price_snapshot(odds_path="reports/odds_snapshot.parquet",
     return edges
 
 
+# --------------------------------------------------------------------------- match markets (H2H / line / total)
+def team_markets(track=None, books=None):
+    """Model fair odds for head-to-head, line (handicap) and total, from the
+    match-outcome model's per-match margin/total predictions. Books are optional:
+    if an odds snapshot with category=='match' rows is supplied we also compute EV.
+
+    margin ~ Normal(mu_m, sd_m): P(home win) = Phi(mu_m / sd_m); line cover at
+    handicap h (home -h) = P(margin > h). total ~ Normal(mu_t, sd_t): priced with
+    the same push-band CDF as player props.
+    """
+    track = track or T.current()
+    tp_path = T.report("team_predictions.parquet", track)
+    try:
+        tp = pd.read_parquet(tp_path)
+    except FileNotFoundError:
+        print(f"no {tp_path} — run team_model.py predict first")
+        return pd.DataFrame()
+
+    rows = []
+    for _, r in tp.iterrows():
+        mu_m, sd_m = float(r["pred_margin"]), max(float(r["sigma_margin"]), 1e-6)
+        mu_t, sd_t = float(r["pred_total"]), max(float(r["sigma_total"]), 1e-6)
+        p_home = float(norm.cdf(mu_m / sd_m))           # P(margin > 0)
+        line = round(mu_m * 2) / 2                       # model's fair handicap (home -line)
+        # at the fair line the home cover prob is ~0.5 by construction; expose it anyway
+        p_home_cover = 1 - float(norm.cdf((line - mu_m) / sd_m))
+        total_line = round(mu_t * 2) / 2
+        p_over, p_under, _ = over_under_probs(mu_t, sd_t, total_line)
+        rows.append({
+            "matchId": r["matchId"], "round": int(r["roundNumber"]),
+            "home": r["home"], "away": r["away"], "start_iso": r.get("start_iso"),
+            "pred_margin": round(mu_m, 1), "pred_total": round(mu_t, 1),
+            "p_home": round(p_home, 3), "p_away": round(1 - p_home, 3),
+            "fair_home": fair_odds(p_home), "fair_away": fair_odds(1 - p_home),
+            "line_home": -line, "line_away": line,
+            "p_home_cover": round(p_home_cover, 3),
+            "total_line": total_line, "p_over": round(p_over, 3), "p_under": round(p_under, 3),
+            "fair_over": fair_odds(p_over), "fair_under": fair_odds(p_under),
+        })
+    out = pd.DataFrame(rows)
+
+    # optional EV vs book head-to-head prices (category == "match", stat == "head_to_head")
+    if books is not None and len(books):
+        mk = books[(books.get("category") == "match")] if "category" in books else books.iloc[0:0]
+        # left as a hook: the match-market book scraper (odds.py) emits one row per
+        # team with a "single" price; join on event teams when that lands.
+        out.attrs["n_book_rows"] = int(len(mk))
+
+    T.ensure_dirs(track)
+    out.to_parquet(T.report("team_edges.parquet", track), index=False)
+    out.to_json(T.report("team_markets.json", track), orient="records")
+    print(f"[{track.name}] wrote {T.report('team_markets.json', track)}: {len(out)} matches")
+    if len(out):
+        print(out[["home", "away", "p_home", "fair_home", "fair_away",
+                   "total_line", "fair_over", "fair_under"]].to_string(index=False))
+    return out
+
+
 # --------------------------------------------------------------------------- try-scorer pricing
 def _try_market(market_raw, line):
     """Classify a try odds row into anytime / 2+ / 3+ / first (skip first)."""
@@ -235,10 +309,12 @@ def _try_market(market_raw, line):
     return "anytime"
 
 
-def price_tries(odds_path="reports/odds_snapshot.parquet",
-                pred_path="reports/tryscorer_predictions.parquet",
-                out_parquet="reports/try_edges.parquet", out_json="reports/try_edges.json"):
+def price_tries(odds_path=None, pred_path=None, out_parquet=None, out_json=None):
     """Value live try-scorer odds against the try model's calibrated probabilities."""
+    odds_path = odds_path or T.report("odds_snapshot.parquet")
+    pred_path = pred_path or T.report("tryscorer_predictions.parquet")
+    out_parquet = out_parquet or T.report("try_edges.parquet")
+    out_json = out_json or T.report("try_edges.json")
     try:
         odds = pd.read_parquet(odds_path)
         preds = pd.read_parquet(pred_path)
@@ -328,5 +404,7 @@ if __name__ == "__main__":
         price_snapshot()
     elif cmd == "tries":
         price_tries()
+    elif cmd == "team":
+        team_markets()
     else:
         selftest()

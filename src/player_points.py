@@ -26,9 +26,7 @@ import predict as PR
 import nrl_meta as M
 import tryscorer as TS
 import kicker as KK
-
-MIN_SEASON = 2021
-HOLDOUTS = (2023, 2024, 2025)
+import tracks as T
 
 
 # --------------------------------------------------------------------------- points distribution
@@ -65,9 +63,10 @@ def expected_points(lt, lg, lfg):
 
 
 # --------------------------------------------------------------------------- backtest
-def backtest():
+def backtest(track=None):
     """Train tries + goals on each holdout's past, combine, score player points."""
-    pm = pd.read_parquet(TS.PM)
+    track = track or T.current()
+    pm = pd.read_parquet(T.proc("player_match.parquet", track))
     pm["utcStartTime"] = pd.to_datetime(pm["utcStartTime"], utc=True)
     # one combined leakage-safe build with BOTH tries and goal-kicking rollups
     pm = KK.add_kicking(pm)
@@ -84,8 +83,8 @@ def backtest():
     feats = [c for c in sorted(set(KK.feature_cols(df)) | set(TS.feature_cols(df))) if c in df.columns]
 
     pred_pts, real_pts, lt_all, lg_all, lfg_all, real_t, real_g = [], [], [], [], [], [], []
-    for s in HOLDOUTS:
-        tr = df[(df.season >= MIN_SEASON) & (df.season < s)]
+    for s in track.holdouts:
+        tr = df[(df.season >= track.min_season) & (df.season < s)]
         te = df[df.season == s]
         if len(te) == 0:
             continue
@@ -125,11 +124,11 @@ def backtest():
     cal_err = round(float(np.mean([abs(a - e) for a, e in zip(rel["pred"], rel["emp"])])), 3)
     return {"n_test": int(len(Y)), "mae_points": mae,
             "mean_points": round(float(Y.mean()), 2),
-            "reliability": rel, "calibration_error": cal_err, "holdouts": list(HOLDOUTS)}
+            "reliability": rel, "calibration_error": cal_err, "holdouts": list(track.holdouts)}
 
 
 # --------------------------------------------------------------------------- predict round
-def anchor_goalkickers(m, match_path="data/processed/player_match.parquet",
+def anchor_goalkickers(m, match_path=None,
                        window=10, min_kick_games=2, rate_cap=5.5):
     """Concentrate goals on each team's CURRENT primary kicker.
 
@@ -141,6 +140,7 @@ def anchor_goalkickers(m, match_path="data/processed/player_match.parquet",
     (so a kicker returning from injury isn't dragged to zero by missed games) and zero
     everyone else. Falls back to the model's lg if no clear kicker.
     """
+    match_path = match_path or T.proc("player_match.parquet")
     try:
         pm = pd.read_parquet(match_path, columns=["playerId", "season", "roundNumber",
                                                   "conversions", "penaltyGoals"])
@@ -171,10 +171,11 @@ def anchor_goalkickers(m, match_path="data/processed/player_match.parquet",
     return m.drop(columns=["_tot", "_kg", "_rate", "lg_model"])
 
 
-def predict_round():
+def predict_round(track=None):
+    track = track or T.current()
     try:
-        tdf = pd.read_parquet("reports/tryscorer_predictions.parquet")
-        kdf = pd.read_parquet("reports/kicker_predictions.parquet")
+        tdf = pd.read_parquet(T.report("tryscorer_predictions.parquet", track))
+        kdf = pd.read_parquet(T.report("kicker_predictions.parquet", track))
     except FileNotFoundError as e:
         print("need try + kicker predictions first:", e)
         return pd.DataFrame()
@@ -184,20 +185,22 @@ def predict_round():
     t = tdf.rename(columns={"lambda": "lt"})[tcols]
     k = kdf.rename(columns={"lambda_goals": "lg", "lambda_fg": "lfg"})[["playerId", "lg", "lfg"]]
     m = t.merge(k, on="playerId", how="left").fillna({"lg": 0.0, "lfg": 0.0})
-    m = anchor_goalkickers(m)
+    m = anchor_goalkickers(m, match_path=T.proc("player_match.parquet", track))
     m["exp_points"] = expected_points(m["lt"], m["lg"], m["lfg"])
     m["exp_tries"] = m["lt"]
     m["exp_kicker_points"] = 2 * m["lg"] + m["lfg"]
     m = m.sort_values("exp_points", ascending=False)
-    m.to_parquet("reports/player_points_predictions.parquet", index=False)
+    T.ensure_dirs(track)
+    m.to_parquet(T.report("player_points_predictions.parquet", track), index=False)
     return m
 
 
-def price_snapshot(odds_path="reports/odds_snapshot.parquet",
-                   pred_path="reports/player_points_predictions.parquet",
-                   out_parquet="reports/points_edges.parquet",
-                   out_json="reports/points_edges.json"):
+def price_snapshot(odds_path=None, pred_path=None, out_parquet=None, out_json=None):
     """Value live player-points and goals over/under markets against the model."""
+    odds_path = odds_path or T.report("odds_snapshot.parquet")
+    pred_path = pred_path or T.report("player_points_predictions.parquet")
+    out_parquet = out_parquet or T.report("points_edges.parquet")
+    out_json = out_json or T.report("points_edges.json")
     import pricing as PRC
     try:
         odds = pd.read_parquet(odds_path)
@@ -283,17 +286,25 @@ def price_snapshot(odds_path="reports/odds_snapshot.parquet",
 
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "all"
+    track = T.current()
+    T.ensure_dirs(track)
     if cmd == "price":
         price_snapshot()
         return
-    print("player-points backtest…")
-    bt = backtest()
-    print(f"  points MAE {bt['mae_points']} (mean {bt['mean_points']}); "
-          f"over/under calib err {bt['calibration_error']} over {bt['n_test']:,} rows")
-    payload = {"generated": pd.Timestamp.now("UTC").isoformat(), "backtest": bt}
+    # Origin tracks reuse the club models upstream (try/kicker); points just combine
+    # them, so skip the club-sized backtest and go straight to the round.
+    if track.name != track.model_track:
+        payload = {"generated": pd.Timestamp.now("UTC").isoformat(),
+                   "reused_model": track.model_track}
+    else:
+        print(f"[{track.name}] player-points backtest…")
+        bt = backtest(track)
+        print(f"  points MAE {bt['mae_points']} (mean {bt['mean_points']}); "
+              f"over/under calib err {bt['calibration_error']} over {bt['n_test']:,} rows")
+        payload = {"generated": pd.Timestamp.now("UTC").isoformat(), "backtest": bt}
 
     if cmd != "backtest":
-        m = predict_round()
+        m = predict_round(track)
         if not m.empty:
             payload["leaders"] = [
                 {"name": r["name"], "team": r["team"], "opp": r["opp"],
@@ -303,8 +314,9 @@ def main():
                 for _, r in m.head(20).iterrows() if r["name"]]
             print(f"  predicted {len(m)} players; top {m.iloc[0]['name']} "
                   f"{m.iloc[0]['exp_points']:.1f} pts")
-    json.dump(payload, open("reports/player_points.json", "w"))
-    print("  wrote reports/player_points.json")
+    dest = T.report("player_points.json", track)
+    json.dump(payload, open(dest, "w"))
+    print(f"  wrote {dest}")
 
 
 if __name__ == "__main__":

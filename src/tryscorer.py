@@ -28,11 +28,7 @@ from sklearn.metrics import roc_auc_score, log_loss, brier_score_loss
 import features as F
 import predict as PR
 import nrl_meta as M
-
-PM = "data/processed/player_match.parquet"
-MODEL = "models/try_model.joblib"
-MIN_SEASON = 2021
-HOLDOUTS = (2023, 2024, 2025)
+import tracks as T
 
 
 # --------------------------------------------------------------------------- features
@@ -95,12 +91,12 @@ def name_map():
 
 
 # --------------------------------------------------------------------------- backtest
-def backtest(df, feats):
+def backtest(df, feats, track):
     rows_pred, rows_real, rows_pos = [], [], []
     base_pos, base_trail = [], []
     # position base rate learned on training portion only (per holdout)
-    for s in HOLDOUTS:
-        tr = df[(df.season >= MIN_SEASON) & (df.season < s)]
+    for s in track.holdouts:
+        tr = df[(df.season >= track.min_season) & (df.season < s)]
         te = df[df.season == s]
         if len(te) == 0:
             continue
@@ -140,17 +136,17 @@ def backtest(df, feats):
             "model": metrics(pc), "baseline_position": metrics(bp),
             "baseline_trailing5": metrics(bt),
             "reliability": rel, "calibration_error": cal_err,
-            "holdouts": list(HOLDOUTS)}
+            "holdouts": list(track.holdouts)}
 
 
 # --------------------------------------------------------------------------- predict the round
-def predict_round(df, feats, model):
-    comp, meta = M.current_competition()
+def predict_round(df, feats, model, track):
+    comp, meta = M.current_competition(track)
     fx = M.fixture(comp)
     rnd = M.next_round(comp, fx)
-    lineups_path = f"data/processed/lineups_r{rnd}.parquet"
+    lineups_path = T.proc(f"lineups_r{rnd}.parquet", track)
     lineups = pd.read_parquet(lineups_path) if os.path.exists(lineups_path) else None
-    pm = pd.read_parquet(PM)
+    pm = pd.read_parquet(T.proc("player_match.parquet", track))
     pm["utcStartTime"] = pd.to_datetime(pm["utcStartTime"], utc=True)
     up, matches = PR.build_upcoming(pm, comp, rnd, lineups)
     full = build(pd.concat([pm, up], ignore_index=True))
@@ -171,38 +167,59 @@ def predict_round(df, feats, model):
     out = pred_df[["playerId", "name", "team", "opp", "position", "matchId",
                    "lambda", "p_anytime", "p_2plus", "exp_tries"]].copy()
     out = out.sort_values("p_anytime", ascending=False)
-    out.to_parquet("reports/tryscorer_predictions.parquet", index=False)
+    T.ensure_dirs(track)
+    out.to_parquet(T.report("tryscorer_predictions.parquet", track), index=False)
     return out, rnd
 
 
 # --------------------------------------------------------------------------- main
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "all"
-    pm = pd.read_parquet(PM)
+    track = T.current()
+    T.ensure_dirs(track)
+    pm = pd.read_parquet(T.proc("player_match.parquet", track))
     pm["utcStartTime"] = pd.to_datetime(pm["utcStartTime"], utc=True)
     df = build(pm)
-    feats = feature_cols(df)
-    lab = df[df.season >= MIN_SEASON]
-    print(f"try model: {len(feats)} features, {len(lab)} labelled rows "
-          f"(season>={MIN_SEASON}), base score rate {(lab['tries']>=1).mean():.3f}")
 
-    bt = backtest(df, feats)
+    # Origin tracks reuse the club track's try model (predict-only) instead of
+    # retraining a club-sized model on the combined parquet every run.
+    if track.name != track.model_track:
+        mb = joblib.load(T.model("try_model.joblib", T.TRACKS[track.model_track]))
+        out, rnd = predict_round(df, mb["features"], mb["model"], track)
+        payload = {"generated": pd.Timestamp.now("UTC").isoformat(),
+                   "reused_model": track.model_track, "round": int(rnd),
+                   "top_chances": [{"name": r["name"], "team": r["team"], "opp": r["opp"],
+                                    "p_anytime": round(float(r["p_anytime"]), 3),
+                                    "p_2plus": round(float(r["p_2plus"]), 3)}
+                                   for _, r in out.head(15).iterrows() if r["name"]]}
+        json.dump(payload, open(T.report("tryscorer.json", track), "w"))
+        print(f"[{track.name}] reused {track.model_track} try model; predicted round {rnd}, "
+              f"{len(out)} players")
+        return
+
+    feats = feature_cols(df)
+    lab = df[df.season >= track.min_season]
+    print(f"[{track.name}] try model: {len(feats)} features, {len(lab)} labelled rows "
+          f"(season>={track.min_season}), base score rate {(lab['tries']>=1).mean():.3f}")
+
+    bt = backtest(df, feats, track)
     print(f"  backtest: model Brier {bt['model']['brier']} AUC {bt['model']['auc']} "
           f"logloss {bt['model']['logloss']}  | calib err {bt['calibration_error']}")
     print(f"  vs position-rate Brier {bt['baseline_position']['brier']} / "
           f"trailing5 Brier {bt['baseline_trailing5']['brier']}")
 
-    # final model on all post-2021 data
+    # final model on all of the track's labelled history
     final = make_model().fit(prep_X(lab, feats), lab["tries"].values)
-    joblib.dump({"model": final, "features": feats}, MODEL)
+    MODEL = T.model("try_model.joblib", track)
+    joblib.dump({"model": final, "features": feats, "track": track.name}, MODEL)
     print(f"  saved {MODEL}")
 
     # permutation feature importance (for the Model Lab)
     importance = []
     try:
         from sklearn.inspection import permutation_importance
-        te = df[df.season.isin(HOLDOUTS)].sample(min(1500, int((df.season.isin(HOLDOUTS)).sum())),
-                                                 random_state=0)
+        hmask = df.season.isin(track.holdouts)
+        te = df[hmask].sample(min(1500, int(hmask.sum())), random_state=0)
         r = permutation_importance(final, prep_X(te, feats), te["tries"].values,
                                    n_repeats=4, random_state=0,
                                    scoring="neg_mean_absolute_error")
@@ -234,7 +251,7 @@ def main():
                "leaders": leaders, "importance": importance, "season": int(pm.season.max())}
 
     if cmd != "backtest":
-        out, rnd = predict_round(df, feats, final)
+        out, rnd = predict_round(df, feats, final, track)
         payload["round"] = int(rnd)
         payload["top_chances"] = [
             {"name": r["name"], "team": r["team"], "opp": r["opp"],
@@ -244,8 +261,9 @@ def main():
         print(f"  predicted round {rnd}: {len(out)} players; "
               f"top chance {out.iloc[0]['name']} {out.iloc[0]['p_anytime']:.2f}")
 
-    json.dump(payload, open("reports/tryscorer.json", "w"))
-    print("  wrote reports/tryscorer.json")
+    dest = T.report("tryscorer.json", track)
+    json.dump(payload, open(dest, "w"))
+    print(f"  wrote {dest}")
 
 
 if __name__ == "__main__":

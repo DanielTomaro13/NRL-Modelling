@@ -13,6 +13,7 @@ Nothing here is leakage-relevant; it only resolves "which comp / round / page".
 import re, json, datetime as dt
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
+import tracks as T
 
 BASE = "https://mc.championdata.com"
 HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json, text/plain, */*"}
@@ -43,22 +44,37 @@ def _get_text(url, retries=3):
             time.sleep(1.5 * (i + 1))
 
 
-def mens_competitions():
-    """All men's NRL Premiership/Finals comps, oldest first."""
+def competitions_for(track=None):
+    """All of a track's competitions, oldest first (default = active TRACK)."""
+    track = track or T.current()
     d = _get_json(f"{BASE}/data/competitions.json")
     comps = d["competitionDetails"]["competition"]
-    mens = [c for c in comps if MENS_RE.search(c["name"]) and "NRLW" not in c["name"]]
-    mens.sort(key=lambda c: (c["season"], c["id"]))
-    return mens
+    return T.select_competitions(comps, track)
 
 
-def current_competition(prefer="Premiership"):
-    """Latest-season men's NRL competition id (Premiership preferred over Finals)."""
-    mens = mens_competitions()
-    season = max(c["season"] for c in mens)
-    cur = [c for c in mens if c["season"] == season]
-    pref = [c for c in cur if prefer.lower() in c["name"].lower()]
-    chosen = (pref or cur)[-1]
+def mens_competitions():
+    """All men's NRL Premiership/Finals comps, oldest first (back-compat helper)."""
+    return competitions_for(T.TRACKS["nrl"])
+
+
+def current_competition(track=None, prefer_regular=True):
+    """Latest-season competition id for the track (regular season preferred over Finals).
+
+    When the track defines a narrower `target_include` (Origin tracks ingest club
+    history but predict only the Origin fixture), restrict to those comps.
+    """
+    track = track or T.current()
+    comps = competitions_for(track)
+    if track.target_include is not None:
+        comps = [c for c in comps if track.target_include.search(c["name"])]
+    if not comps:
+        raise SystemExit(f"no competitions for track {track.name!r}")
+    season = max(c["season"] for c in comps)
+    cur = [c for c in comps if c["season"] == season]
+    if prefer_regular:
+        reg = [c for c in cur if "final" not in c["name"].lower()]
+        cur = reg or cur
+    chosen = cur[-1]
     return int(chosen["id"]), chosen
 
 

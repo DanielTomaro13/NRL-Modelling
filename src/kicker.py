@@ -27,11 +27,8 @@ from sklearn.metrics import mean_absolute_error
 import features as F
 import predict as PR
 import nrl_meta as M
+import tracks as T
 
-PM = "data/processed/player_match.parquet"
-MODEL = "models/kicker_model.joblib"
-MIN_SEASON = 2021
-HOLDOUTS = (2023, 2024, 2025)
 # kicking stats we add to the rolling history
 KICK_STATS = ["goals", "kicker_points", "fieldGoals", "conversions",
               "conversionAttempts", "penaltyGoals", "penaltyGoalAttempts"]
@@ -91,10 +88,10 @@ def name_map():
     return nm
 
 
-def backtest(df, feats):
+def backtest(df, feats, track):
     kp_pred, kp_real, base, lam_all, goal_real = [], [], [], [], []
-    for s in HOLDOUTS:
-        tr = df[(df.season >= MIN_SEASON) & (df.season < s)]
+    for s in track.holdouts:
+        tr = df[(df.season >= track.min_season) & (df.season < s)]
         te = df[df.season == s]
         if len(te) == 0:
             continue
@@ -128,16 +125,16 @@ def backtest(df, feats):
             "n_kickers": int(kk.sum()),
             "mean_kicker_points": round(float(y.mean()), 2),
             "goal_reliability": rel, "goal_calibration_error": cal_err,
-            "holdouts": list(HOLDOUTS)}
+            "holdouts": list(track.holdouts)}
 
 
-def predict_round(df, feats, model):
-    comp, meta = M.current_competition()
+def predict_round(df, feats, model, track):
+    comp, meta = M.current_competition(track)
     fx = M.fixture(comp)
     rnd = M.next_round(comp, fx)
-    lp = f"data/processed/lineups_r{rnd}.parquet"
+    lp = T.proc(f"lineups_r{rnd}.parquet", track)
     lineups = pd.read_parquet(lp) if os.path.exists(lp) else None
-    pm = pd.read_parquet(PM)
+    pm = pd.read_parquet(T.proc("player_match.parquet", track))
     pm["utcStartTime"] = pd.to_datetime(pm["utcStartTime"], utc=True)
     up, matches = PR.build_upcoming(pm, comp, rnd, lineups)
     full = build(pd.concat([pm, up], ignore_index=True))
@@ -156,26 +153,45 @@ def predict_round(df, feats, model):
     out = pred[["playerId", "name", "team", "opp", "position", "matchId",
                 "lambda_goals", "lambda_fg", "exp_kicker_points"]].copy()
     out = out.sort_values("exp_kicker_points", ascending=False)
-    out.to_parquet("reports/kicker_predictions.parquet", index=False)
+    T.ensure_dirs(track)
+    out.to_parquet(T.report("kicker_predictions.parquet", track), index=False)
     return out, rnd
 
 
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "all"
-    pm = pd.read_parquet(PM)
+    track = T.current()
+    T.ensure_dirs(track)
+    pm = pd.read_parquet(T.proc("player_match.parquet", track))
     pm["utcStartTime"] = pd.to_datetime(pm["utcStartTime"], utc=True)
     df = build(pm)
+
+    # Origin tracks reuse the club track's kicker model (predict-only).
+    if track.name != track.model_track:
+        mb = joblib.load(T.model("kicker_model.joblib", T.TRACKS[track.model_track]))
+        out, rnd = predict_round(df, mb["features"], mb["model"], track)
+        payload = {"generated": pd.Timestamp.now("UTC").isoformat(),
+                   "reused_model": track.model_track, "round": int(rnd),
+                   "top_kickers": [{"name": r["name"], "team": r["team"],
+                                    "exp_kicker_points": round(float(r["exp_kicker_points"]), 1)}
+                                   for _, r in out.head(12).iterrows()
+                                   if r["name"] and r["exp_kicker_points"] > 0.5]}
+        json.dump(payload, open(T.report("kicker.json", track), "w"))
+        print(f"[{track.name}] reused {track.model_track} kicker model; predicted round {rnd}")
+        return
+
     feats = feature_cols(df)
-    lab = df[df.season >= MIN_SEASON]
-    print(f"kicker model: {len(feats)} features, {len(lab)} rows, "
+    lab = df[df.season >= track.min_season]
+    print(f"[{track.name}] kicker model: {len(feats)} features, {len(lab)} rows, "
           f"mean kicker pts {lab['kicker_points'].mean():.2f}")
 
-    bt = backtest(df, feats)
+    bt = backtest(df, feats, track)
     print(f"  backtest: MAE {bt['mae_model']} vs baseline {bt['mae_baseline']} "
           f"(kickers-only MAE {bt['mae_kickers_only']}, n={bt['n_kickers']})")
 
     final = make_model().fit(prep_X(lab, feats), lab["goals"].values)
-    joblib.dump({"model": final, "features": feats}, MODEL)
+    MODEL = T.model("kicker_model.joblib", track)
+    joblib.dump({"model": final, "features": feats, "track": track.name}, MODEL)
     print(f"  saved {MODEL}")
 
     cur = pm[pm.season == int(pm.season.max())].copy()
@@ -193,7 +209,7 @@ def main():
     payload = {"generated": pd.Timestamp.now("UTC").isoformat(), "backtest": bt,
                "leaders": leaders, "season": int(pm.season.max())}
     if cmd != "backtest":
-        out, rnd = predict_round(df, feats, final)
+        out, rnd = predict_round(df, feats, final, track)
         payload["round"] = int(rnd)
         payload["top_kickers"] = [
             {"name": r["name"], "team": r["team"],
@@ -201,8 +217,9 @@ def main():
             for _, r in out.head(12).iterrows() if r["name"] and r["exp_kicker_points"] > 0.5]
         print(f"  predicted round {rnd}: top kicker {out.iloc[0]['name']} "
               f"{out.iloc[0]['exp_kicker_points']:.1f} pts")
-    json.dump(payload, open("reports/kicker.json", "w"))
-    print("  wrote reports/kicker.json")
+    dest = T.report("kicker.json", track)
+    json.dump(payload, open(dest, "w"))
+    print(f"  wrote {dest}")
 
 
 if __name__ == "__main__":

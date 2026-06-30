@@ -1,28 +1,28 @@
 """
-Ingest NRL men's Premiership + Finals data from the Champion Data match-centre feed.
+Ingest a competition track from the Champion Data match-centre feed.
+
+The track (men's NRL, NRLW, State of Origin) is chosen by the TRACK env var
+(default "nrl"); see src/tracks.py for the competition filters and output paths.
 
 Pipeline:
-  competitions.json  -> select men's NRL Premiership/Finals competitions
+  competitions.json  -> select the active track's competitions
   {comp}/fixture.json -> match ids + context (round, venue, home/away, date)
   {comp}/{match}.json -> per-player stat lines  (cached to data/raw/)
 
 Outputs:
-  data/processed/player_match.parquet  (one row per player per match, raw stats + context)
+  data/processed[/<track>]/player_match.parquet  (one row per player per match)
 """
-import json, os, re, time, sys
+import json, os, time, sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
 import pandas as pd
+import tracks as T
 
 BASE = "https://mc.championdata.com"
-RAW = "data/raw"
-OUT = "data/processed/player_match.parquet"
+RAW = T.RAW
 HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json, text/plain, */*"}
-
-# men's NRL Premiership or Finals, exclude NRLW
-MENS_RE = re.compile(r"\bNRL (Premiership|Finals)\b", re.I)
 
 # raw player stat fields we keep
 STAT_FIELDS = [
@@ -52,9 +52,7 @@ def fetch_json(url, retries=4):
 def select_competitions():
     d = fetch_json(f"{BASE}/data/competitions.json")
     comps = d["competitionDetails"]["competition"]
-    mens = [c for c in comps if MENS_RE.search(c["name"]) and "NRLW" not in c["name"]]
-    mens.sort(key=lambda c: (c["season"], c["id"]))
-    return mens
+    return T.select_competitions(comps)
 
 
 def cache_match(comp_id, match_id):
@@ -111,14 +109,23 @@ def parse_match(comp, match_meta, mj):
 
 
 def main():
+    track = T.current()
     comps = select_competitions()
-    print(f"Selected {len(comps)} men's NRL competitions "
+    if not comps:
+        raise SystemExit(f"no competitions matched track {track.name!r}")
+    print(f"[{track.name}] selected {len(comps)} competitions "
           f"({comps[0]['season']}-{comps[-1]['season']})", flush=True)
 
     # gather (comp, match_meta) for all matches in all comps
     tasks = []
     for c in comps:
-        fx = fetch_json(f"{BASE}/data/{c['id']}/fixture.json")
+        try:
+            fx = fetch_json(f"{BASE}/data/{c['id']}/fixture.json")
+        except HTTPError as e:
+            # a comp can exist in the catalogue before its fixture is published
+            # (e.g. an upcoming season) -> skip it rather than abort the run
+            print(f"  no fixture for {c['id']} ({c['name']}): HTTP {e.code}", flush=True)
+            continue
         for m in fx.get("fixture", {}).get("match", []):
             tasks.append((c, m))
     print(f"{len(tasks)} matches listed across fixtures", flush=True)
@@ -148,7 +155,8 @@ def main():
     df = pd.DataFrame(all_rows)
     df["utcStartTime"] = pd.to_datetime(df["utcStartTime"], errors="coerce", utc=True)
     df = df.sort_values(["utcStartTime", "matchId", "squadId", "jumperNumber"]).reset_index(drop=True)
-    os.makedirs("data/processed", exist_ok=True)
+    T.ensure_dirs(track)
+    OUT = T.proc("player_match.parquet", track)
     df.to_parquet(OUT, index=False)
     print(f"\nWrote {OUT}: {len(df)} rows, {df['playerId'].nunique()} players, "
           f"{df['matchId'].nunique()} matches, seasons {df['season'].min()}-{df['season'].max()}")
