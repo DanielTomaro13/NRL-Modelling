@@ -21,6 +21,8 @@ nrl24-0.com fetch URLs are byte-for-byte unchanged.
 data/raw is NOT namespaced: it is a shared match cache keyed by Champion Data
 competition id, so men's / women's / Origin matches never collide.
 """
+from __future__ import annotations
+
 import os
 import re
 from dataclasses import dataclass, field

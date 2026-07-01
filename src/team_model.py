@@ -48,37 +48,26 @@ def team_matches(track=None):
 
 
 def add_elo(ts):
-    """Pre-match Elo for each squad (margin-of-victory weighted, season-regressed)."""
-    rating, last_season = {}, {}
+    """Pre-match Elo for each squad (margin-of-victory weighted, season-regressed).
+
+    Single chronological pass: record each squad's CURRENT rating as its pre-match
+    value, then apply the post-match update once per match (rows come in home/away
+    pairs, so gate the update on an unseen matchId to avoid double-counting).
+    """
+    rating, last_season, seen = {}, {}, set()
     pre_for, pre_against = [], []
     for _, r in ts.iterrows():
-        s, h, a = r["squadId"], r["oppSquadId"], None
-        for sq in (s, h):
-            if sq not in rating:
-                rating[sq] = 1500.0
-                last_season[sq] = r["season"]
-            if last_season[sq] != r["season"]:  # regress to mean between seasons
-                rating[sq] = 1500.0 + SEASON_REGRESS * (rating[sq] - 1500.0)
-                last_season[sq] = r["season"]
-        pre_for.append(rating[s])
-        pre_against.append(rating[h])
-    ts = ts.copy()
-    ts["elo_for"], ts["elo_against"] = pre_for, pre_against
-    # second pass to actually update after recording pre-match values, in order,
-    # but only ONCE per match (use the home row to avoid double counting)
-    rating, last_season = {}, {}
-    seen = set()
-    for _, r in ts.iterrows():
-        mid = r["matchId"]
-        s, h = r["squadId"], r["oppSquadId"]
+        mid, s, h = r["matchId"], r["squadId"], r["oppSquadId"]
         for sq in (s, h):
             rating.setdefault(sq, 1500.0)
             last_season.setdefault(sq, r["season"])
-            if last_season[sq] != r["season"]:
+            if last_season[sq] != r["season"]:  # regress to mean between seasons
                 rating[sq] = 1500.0 + SEASON_REGRESS * (rating[sq] - 1500.0)
                 last_season[sq] = r["season"]
+        pre_for.append(rating[s])       # this squad's pre-match rating
+        pre_against.append(rating[h])   # opponent's pre-match rating
         if mid in seen:
-            continue
+            continue                    # update the match's ratings only once
         seen.add(mid)
         Rs, Rh = rating[s], rating[h]
         exp_s = 1.0 / (1.0 + 10 ** (-(Rs - Rh) / 400.0))
@@ -87,6 +76,8 @@ def add_elo(ts):
         delta = ELO_K * mov * (res_s - exp_s)
         rating[s] = Rs + delta
         rating[h] = Rh - delta
+    ts = ts.copy()
+    ts["elo_for"], ts["elo_against"] = pre_for, pre_against
     return ts
 
 

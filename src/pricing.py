@@ -85,9 +85,16 @@ def calibrate_dispersion(track=None, features=None, model=None, meta=None, out=N
             alpha = max(alpha, 0.0)
         else:
             alpha, beta = float(resid.std()), 0.0
+        # Provisional targets calibrate on a single (train_max) season the final model
+        # was fit on, so residuals are in-sample and biased low -> widen sigma by a
+        # safety margin until multi-season data allows an out-of-sample calibration.
+        # (Latent until NRLW book odds are wired; keeps over/under prices conservative.)
+        infl = 1.25 if t in track.provisional_targets else 1.0
+        alpha *= infl; beta *= infl
         disp[t] = {"alpha": round(float(alpha), 4), "beta": round(float(beta), 4),
-                   "sigma_floor": SIGMA_FLOOR.get(t, 1.0),
-                   "global_sd": round(float(resid.std()), 3),
+                   "sigma_floor": round(SIGMA_FLOOR.get(t, 1.0) * infl, 3),
+                   "global_sd": round(float(resid.std()) * infl, 3),
+                   "provisional": t in track.provisional_targets,
                    "mean_pred": round(float(pred.mean()), 2)}
     json.dump(disp, open(out, "w"), indent=2)
     print(f"Wrote {out}")
