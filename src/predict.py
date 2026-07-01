@@ -35,7 +35,12 @@ def fixture(comp):
 
 
 def build_upcoming(pm, comp, rnd, lineups=None):
-    matches = [m for m in fixture(comp) if m["roundNumber"] == rnd]
+    # Only project games that haven't been played. Normally every game in the
+    # upcoming round is still scheduled, but State of Origin lists all three games
+    # under roundNumber 1, so without this filter each player would be projected
+    # once per completed game as well as the next one.
+    matches = [m for m in fixture(comp)
+               if m["roundNumber"] == rnd and m.get("matchStatus") != "complete"]
     utc_by_match = {m["matchId"]: pd.to_datetime(m["utcStartTime"], utc=True) for m in matches}
     venue_by_match = {m["matchId"]: m["venueId"] for m in matches}
     season_by_match = {mid: (utc.year if pd.notna(utc) else None)
@@ -81,7 +86,9 @@ def build_upcoming(pm, comp, rnd, lineups=None):
                     })
                     rows.append(r)
 
-    up = pd.DataFrame(rows)
+    # no upcoming games (e.g. a rep series whose games are all played) -> return an
+    # empty frame with the right columns so downstream concat/feature code is a no-op
+    up = pd.DataFrame(rows, columns=list(pm.columns)) if not rows else pd.DataFrame(rows)
     up["utcStartTime"] = pd.to_datetime(up["utcStartTime"], utc=True)
     return up, matches
 
@@ -106,6 +113,12 @@ def run(comp, rnd, lineups_path=None, track=None):
     bundle = joblib.load(T.model_for_prediction("nrl_models.joblib", track))
     feats = bundle.get("features") or json.load(open(T.proc("feature_cols.json", track)))["features"]
     pred_df = full[(full.compName == "upcoming")].copy()
+    if pred_df.empty:
+        # nothing to project (e.g. a rep series that has finished) — write empty
+        T.ensure_dirs(track)
+        pred_df.to_parquet(T.report("round_predictions.parquet", track), index=False)
+        print(f"[{track.name}] no upcoming games for round {rnd} — wrote empty predictions")
+        return pred_df, matches, rnd
     X = pred_df[feats + ["position"]].copy()
     X["position"] = X["position"].astype("category")
 

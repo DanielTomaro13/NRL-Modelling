@@ -210,7 +210,8 @@ def predict(comp, rnd, track=None):
     track = track or T.current()
     bundle = joblib.load(T.model("team_model.joblib", track))
     fx = M.fixture(comp)
-    matches = [x for x in fx if x["roundNumber"] == int(rnd)]
+    matches = [x for x in fx if x["roundNumber"] == int(rnd)
+               and x.get("matchStatus") != "complete"]
     rows = []
     for x in matches:
         h, a = x["homeSquadId"], x["awaySquadId"]

@@ -151,6 +151,12 @@ def predict_round(df, feats, model, track):
     up, matches = PR.build_upcoming(pm, comp, rnd, lineups)
     full = build(pd.concat([pm, up], ignore_index=True))
     pred_df = full[full.compName == "upcoming"].copy()
+    if pred_df.empty:
+        out = pd.DataFrame(columns=["playerId", "name", "team", "opp", "position",
+                                    "matchId", "lambda", "p_anytime", "p_2plus", "exp_tries"])
+        T.ensure_dirs(track)
+        out.to_parquet(T.report("tryscorer_predictions.parquet", track), index=False)
+        return out, rnd
     lam = np.clip(model.predict(prep_X(pred_df, feats)), 0, None)
     pred_df["lambda"] = lam
     pred_df["p_anytime"] = p_at_least(lam, 1)
