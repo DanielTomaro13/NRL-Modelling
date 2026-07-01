@@ -78,6 +78,10 @@ def add_elo(ts):
         rating[h] = Rh - delta
     ts = ts.copy()
     ts["elo_for"], ts["elo_against"] = pre_for, pre_against
+    # `rating` now holds each squad's CURRENT (post-all-updates) rating — the one
+    # upcoming fixtures should be predicted with. (Taking the last row's elo_for
+    # instead would exclude every team's most recent result.)
+    ts.attrs["final_ratings"] = {k: float(v) for k, v in rating.items()}
     return ts
 
 
@@ -126,6 +130,7 @@ def train(track=None):
 
     def fit_eval(feats, target):
         maes, base_maes, accs, base_accs = [], [], [], []
+        oos_resid, oos_pred, oos_y = [], [], []
         for season in track.holdouts:
             tr = m[(m.season >= track.min_season) & (m.season < season)]
             te = m[m.season == season]
@@ -133,6 +138,8 @@ def train(track=None):
                 continue
             mdl = Ridge(alpha=5.0).fit(tr[feats], tr[target])
             pred = mdl.predict(te[feats])
+            oos_resid.extend((te[target].values - pred).tolist())
+            oos_pred.extend(pred.tolist()); oos_y.extend(te[target].values.tolist())
             maes.append(mean_absolute_error(te[target], pred))
             base = np.full(len(te), tr[target].mean())
             base_maes.append(mean_absolute_error(te[target], base))
@@ -142,24 +149,48 @@ def train(track=None):
         final = Ridge(alpha=5.0).fit(
             m[m.season.between(track.min_season, track.train_max)][feats],
             m[m.season.between(track.min_season, track.train_max)][target])
-        resid = m[target] - final.predict(m[feats])
-        return final, {
+        # sigma from WALK-FORWARD holdout residuals (each season predicted by a
+        # model trained strictly before it). In-sample residuals of the final
+        # model run ~10-20% low, which inflates every H2H/line/total probability.
+        if oos_resid:
+            sigma = float(np.std(oos_resid))
+        else:
+            sigma = float((m[target] - final.predict(m[feats])).std())
+        metrics = {
             "mae": round(float(np.mean(maes)), 2) if maes else None,
             "base_mae": round(float(np.mean(base_maes)), 2) if base_maes else None,
-            "sigma": round(float(resid.std()), 2),
+            "sigma": round(sigma, 2),
             "h2h_acc": round(float(np.mean(accs)), 3) if accs else None,
             "h2h_base_acc": round(float(np.mean(base_accs)), 3) if base_accs else None,
         }
+        if target == "margin" and oos_pred:
+            # H2H probability calibration on the stacked holdouts, using this sigma
+            from scipy.stats import norm as _n
+            p = _n.cdf(np.array(oos_pred) / sigma)
+            y = (np.array(oos_y) > 0).astype(float)
+            metrics["h2h_brier"] = round(float(np.mean((p - y) ** 2)), 4)
+            bins = np.clip((p * 5).astype(int), 0, 4)  # 5 reliability bins
+            ece = sum(np.mean(bins == b) * abs(p[bins == b].mean() - y[bins == b].mean())
+                      for b in range(5) if (bins == b).sum() >= 10)
+            metrics["h2h_cal_err"] = round(float(ece), 4)
+        return final, metrics
 
     margin_mdl, margin_m = fit_eval(MARGIN_FEATS, "margin")
     total_mdl, total_m = fit_eval(TOTAL_FEATS, "total")
 
-    # latest pre-match Elo per squad (for prediction of upcoming fixtures)
+    # CURRENT Elo per squad for upcoming fixtures: the post-update rating after
+    # every played game (the last row's elo_for is the PRE-match rating of the
+    # most recent game, i.e. one result stale for every team).
     ts = add_elo(team_matches(track))
-    latest_elo = (ts.sort_values("utcStartTime").groupby("squadId")["elo_for"].last().to_dict())
-    fts = add_form(team_matches(track))
-    latest_form = (fts.sort_values("utcStartTime").groupby("squadId")
-                   .agg(form_for=("form_for", "last"), form_against=("form_against", "last")))
+    latest_elo = ts.attrs["final_ratings"]
+    # current form likewise INCLUDES each team's most recent game: rolling mean
+    # over the last FORM_WIN played games, unshifted (the shift(1) in add_form
+    # is for leakage-safe training rows, not for the "as of now" snapshot).
+    fts = team_matches(track).sort_values(["squadId", "utcStartTime"])
+    cur = fts.groupby("squadId").agg(
+        form_for=("score", lambda s: s.tail(FORM_WIN).mean()),
+        form_against=("oppScore", lambda s: s.tail(FORM_WIN).mean()))
+    latest_form = cur
 
     bundle = {
         "track": track.name,
@@ -177,7 +208,8 @@ def train(track=None):
     joblib.dump(bundle, out)
     print(f"[{track.name}] saved {out}")
     print(f"  margin: holdout MAE {margin_m['mae']} (base {margin_m['base_mae']}), "
-          f"sigma {margin_m['sigma']}, H2H acc {margin_m['h2h_acc']} (base {margin_m['h2h_base_acc']})")
+          f"sigma {margin_m['sigma']}, H2H acc {margin_m['h2h_acc']} (base {margin_m['h2h_base_acc']}), "
+          f"brier {margin_m.get('h2h_brier')}, cal_err {margin_m.get('h2h_cal_err')}")
     print(f"  total : holdout MAE {total_m['mae']} (base {total_m['base_mae']}), sigma {total_m['sigma']}")
     return bundle
 

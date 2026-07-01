@@ -43,9 +43,11 @@ SIGMA_FLOOR = {"runsHitup": 1.0, "runs": 1.8, "runMetres": 15.0,
 def calibrate_dispersion(track=None, features=None, model=None, meta=None, out=None):
     """Fit sigma(mu) = alpha + beta*mu per target from out-of-time residuals.
 
-    Residuals are taken from the track's holdout seasons, except for provisional
-    targets (e.g. NRLW run metres, only captured from train_max) which calibrate
-    on that single season.
+    Preferred residual source: the walk-forward OOS predictions train.py stacks
+    into <track>/oos_predictions.parquet (each holdout season predicted by a
+    model trained strictly before it). Falls back to re-predicting the holdout
+    seasons with the production bundle — but note that bundle TRAINS through
+    those seasons, so fallback residuals are in-sample and sigma runs low.
     """
     import joblib
     track = track or T.current()
@@ -53,6 +55,14 @@ def calibrate_dispersion(track=None, features=None, model=None, meta=None, out=N
     model = model or T.model("nrl_models.joblib", track)
     meta = meta or T.proc("feature_cols.json", track)
     out = out or T.model("dispersion.json", track)
+
+    oos = None
+    try:
+        oos = pd.read_parquet(T.proc("oos_predictions.parquet", track))
+        print(f"[{track.name}] dispersion from {len(oos):,} walk-forward OOS predictions")
+    except Exception:
+        print(f"[{track.name}] WARNING: no oos_predictions.parquet — falling back "
+              f"to in-sample residuals (sigma will run low); re-run train.py")
 
     df = pd.read_parquet(features)
     feats = json.load(open(meta))["features"]
@@ -63,12 +73,17 @@ def calibrate_dispersion(track=None, features=None, model=None, meta=None, out=N
     for t in TARGETS:
         if t not in avail:
             continue  # target not modelled for this track
-        seasons = (track.train_max,) if t in track.provisional_targets else track.holdouts
-        te = df[df.season.isin(seasons)].copy()
-        X = te[feats + ["position"]].copy()
-        X["position"] = X["position"].astype("category")
-        pred = np.clip(bundle["models"][t].predict(X), 0, None)
-        resid = te[t].values - pred
+        if oos is not None and (oos["target"] == t).any():
+            sub = oos[oos["target"] == t]
+            pred = np.clip(sub["pred"].to_numpy(float), 0, None)
+            resid = sub["y"].to_numpy(float) - pred
+        else:
+            seasons = (track.train_max,) if t in track.provisional_targets else track.holdouts
+            te = df[df.season.isin(seasons)].copy()
+            X = te[feats + ["position"]].copy()
+            X["position"] = X["position"].astype("category")
+            pred = np.clip(bundle["models"][t].predict(X), 0, None)
+            resid = te[t].values - pred
         # bin by predicted decile; robust per-bin residual std; fit sigma ~ mu
         qs = np.quantile(pred, np.linspace(0, 1, 11))
         qs = np.unique(qs)
@@ -85,10 +100,9 @@ def calibrate_dispersion(track=None, features=None, model=None, meta=None, out=N
             alpha = max(alpha, 0.0)
         else:
             alpha, beta = float(resid.std()), 0.0
-        # Provisional targets calibrate on a single (train_max) season the final model
-        # was fit on, so residuals are in-sample and biased low -> widen sigma by a
-        # safety margin until multi-season data allows an out-of-sample calibration.
-        # (Latent until NRLW book odds are wired; keeps over/under prices conservative.)
+        # Provisional targets calibrate on a single season's round-holdout — genuinely
+        # out-of-sample now, but one short season is a small residual sample, so keep
+        # a safety widening until multi-season data exists.
         infl = 1.25 if t in track.provisional_targets else 1.0
         alpha *= infl; beta *= infl
         disp[t] = {"alpha": round(float(alpha), 4), "beta": round(float(beta), 4),
@@ -246,29 +260,39 @@ def _norm(s):
     return _re.sub(r"[^a-z]", "", (s or "").lower())
 
 
+TOTAL_LINE_MIN = 20.0    # an NRL total below this is a parse artifact, not a market
+HCAP_MAX = 40.0          # |handicap| beyond this is junk
+
+
 def _best_match_odds(mk, home, away):
     """From a book match-market snapshot for one event, return best available
-    head-to-head prices per side + total over/under prices, keyed by book."""
+    head-to-head prices per side, line rows, and total over/under — each total
+    side kept WITH its own line+book so EV is always priced at the line the
+    price was posted for (books post different totals). Rows whose line/handicap
+    failed to parse (None / 0 / implausible) are dropped."""
     hk, ak = _norm(home), _norm(away)
-    best = {"home": (None, None), "away": (None, None),   # (price, book)
-            "line": [], "total_over": (None, None), "total_under": (None, None),
-            "total_line": None}
+    best = {"home": (None, None), "away": (None, None),          # (price, book)
+            "line": [],                                          # (kind, hcap, price, book)
+            "total_over": (None, None, None),                    # (price, book, line)
+            "total_under": (None, None, None)}
     for _, r in mk.iterrows():
         stat, kind, price = r.get("stat"), r.get("kind"), r.get("single")
         if stat == "head_to_head" and price and kind in ("home", "away"):
             if best[kind][0] is None or price > best[kind][0]:
                 best[kind] = (float(price), r.get("book"))
         elif stat == "line" and price and kind in ("home", "away"):
-            best["line"].append((kind, r.get("line"), float(price), r.get("book")))
+            h = r.get("line")
+            if h is not None and pd.notna(h) and abs(float(h)) <= HCAP_MAX:
+                best["line"].append((kind, float(h), float(price), r.get("book")))
         elif stat == "total":
-            if r.get("over"):
-                if best["total_over"][0] is None or r["over"] > best["total_over"][0]:
-                    best["total_over"] = (float(r["over"]), r.get("book"))
-            if r.get("under"):
-                if best["total_under"][0] is None or r["under"] > best["total_under"][0]:
-                    best["total_under"] = (float(r["under"]), r.get("book"))
-            if r.get("line") is not None:
-                best["total_line"] = float(r["line"])
+            ln = r.get("line")
+            if ln is None or pd.isna(ln) or float(ln) < TOTAL_LINE_MIN:
+                continue
+            ln = float(ln)
+            if r.get("over") and (best["total_over"][0] is None or r["over"] > best["total_over"][0]):
+                best["total_over"] = (float(r["over"]), r.get("book"), ln)
+            if r.get("under") and (best["total_under"][0] is None or r["under"] > best["total_under"][0]):
+                best["total_under"] = (float(r["under"]), r.get("book"), ln)
     return best
 
 
@@ -327,21 +351,26 @@ def team_markets(track=None):
                 if b["away"][0]:
                     row.update(book_away=b["away"][1], book_away_price=b["away"][0],
                                ev_away=round(((1 - p_home) * b["away"][0] - 1) * 100, 1))
-                if b["total_over"][0] and b["total_line"] is not None:
-                    po, _, _ = over_under_probs(mu_t, sd_t, b["total_line"])
-                    row.update(book_over=b["total_over"][1], book_over_price=b["total_over"][0],
-                               book_total_line=b["total_line"],
-                               ev_over=round((po * b["total_over"][0] - 1) * 100, 1))
-                if b["total_under"][0] and b["total_line"] is not None:
-                    _, pu, _ = over_under_probs(mu_t, sd_t, b["total_line"])
-                    row.update(book_under=b["total_under"][1], book_under_price=b["total_under"][0],
-                               ev_under=round((pu * b["total_under"][0] - 1) * 100, 1))
-                # best line: model P(margin > handicap) vs each posted home/away line
+                if b["total_over"][0]:
+                    price, book, ln = b["total_over"]
+                    po, _, _ = over_under_probs(mu_t, sd_t, ln)
+                    row.update(book_over=book, book_over_price=price,
+                               book_total_line=ln,
+                               ev_over=round((po * price - 1) * 100, 1))
+                if b["total_under"][0]:
+                    price, book, ln = b["total_under"]
+                    _, pu, _ = over_under_probs(mu_t, sd_t, ln)
+                    row.update(book_under=book, book_under_price=price,
+                               book_under_line=ln,
+                               ev_under=round((pu * price - 1) * 100, 1))
+                # best line: cover prob vs each posted side's SIGNED handicap h
+                # (home -4.5 covers iff margin > +4.5 = -h; away +4.5 covers iff
+                # margin < +4.5 = h). All five books post per-side signed lines.
                 best_line_ev = None
                 for kind, hcap, price, book in b["line"]:
                     if hcap is None:
                         continue
-                    p = (1 - float(norm.cdf((hcap - mu_m) / sd_m))) if kind == "home" \
+                    p = (1 - float(norm.cdf((-hcap - mu_m) / sd_m))) if kind == "home" \
                         else float(norm.cdf((hcap - mu_m) / sd_m))
                     ev = (p * price - 1) * 100
                     if best_line_ev is None or ev > best_line_ev["ev_line"]:

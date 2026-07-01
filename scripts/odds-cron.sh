@@ -28,6 +28,7 @@ git pull --rebase --autostash origin main || { echo "$(ts) pull failed"; exit 1;
 "$PY" src/odds.py            || echo "$(ts) odds.py nonzero (continuing)"
 "$PY" src/pricing.py price   || { echo "$(ts) pricing price failed"; exit 1; }
 "$PY" src/pricing.py tries   || echo "$(ts) pricing tries nonzero"
+"$PY" src/pricing.py team    || echo "$(ts) pricing team nonzero"
 "$PY" src/player_points.py price || echo "$(ts) player_points price nonzero"
 "$PY" src/pickem.py          || echo "$(ts) pickem nonzero"
 "$PY" src/compare.py         || echo "$(ts) compare nonzero"

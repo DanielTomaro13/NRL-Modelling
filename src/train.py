@@ -49,10 +49,21 @@ def _round_cutoff(df, frac=0.7):
 
 def evaluate(df, feats, track):
     """Per-target out-of-sample MAE vs baselines. Full targets use season
-    holdouts; provisional targets use a within-train_max round holdout."""
-    rows = []
+    holdouts; provisional targets use a within-train_max round holdout.
+
+    Returns (metrics_df, oos_df). oos_df stacks every holdout prediction
+    (target, season, y, pred) — the honest out-of-time residuals that
+    pricing.calibrate_dispersion should fit sigma(mu) on. (Previously sigma was
+    calibrated by re-predicting the holdout with the PRODUCTION model, which
+    trains through those seasons — in-sample residuals, sigma biased low,
+    over/under probabilities overconfident.)"""
+    rows, oos = [], []
     full = [t for t in TARGETS if t not in track.provisional_targets]
     prov = [t for t in TARGETS if t in track.provisional_targets]
+
+    def collect(t, te, pred):
+        oos.append(pd.DataFrame({"target": t, "season": te["season"].values,
+                                 "y": te[t].values, "pred": pred}))
 
     for season in track.holdouts:
         tr = df[(df.season >= track.min_season) & (df.season < season)]
@@ -63,6 +74,7 @@ def evaluate(df, feats, track):
         for t in full:
             m = make_model(t).fit(Xtr, tr[t].values)
             pred = np.clip(m.predict(Xte), 0, None)
+            collect(t, te, pred)
             b5 = np.clip(te[BASELINE_R5[t]].fillna(te[t].mean()).values, 0, None)
             bc = np.clip(te[BASELINE_CAREER[t]].fillna(te[t].mean()).values, 0, None)
             rows.append({"holdout": str(season), "kind": "season", "target": t, "n_test": len(te),
@@ -82,6 +94,7 @@ def evaluate(df, feats, track):
                 for t in prov:
                     m = make_model(t).fit(Xtr, tr[t].values)
                     pred = np.clip(m.predict(Xte), 0, None)
+                    collect(t, te, pred)
                     b5 = np.clip(te[BASELINE_R5[t]].fillna(te[t].mean()).values, 0, None)
                     bc = np.clip(te[BASELINE_CAREER[t]].fillna(te[t].mean()).values, 0, None)
                     rows.append({"holdout": f"{track.train_max} R>{cut:.0f}", "kind": "round",
@@ -91,7 +104,8 @@ def evaluate(df, feats, track):
                                  "MAE_base_career": mean_absolute_error(te[t].values, bc),
                                  "RMSE_model": mean_squared_error(te[t].values, pred) ** 0.5,
                                  "RMSE_base_r5": mean_squared_error(te[t].values, b5) ** 0.5})
-    return pd.DataFrame(rows)
+    oos_df = pd.concat(oos, ignore_index=True) if oos else pd.DataFrame()
+    return pd.DataFrame(rows), oos_df
 
 
 def main():
@@ -100,7 +114,11 @@ def main():
     feats = json.load(open(T.proc("feature_cols.json", track)))["features"]
     T.ensure_dirs(track)
 
-    res = evaluate(df, feats, track)
+    res, oos = evaluate(df, feats, track)
+    if not oos.empty:
+        oos.to_parquet(T.proc("oos_predictions.parquet", track), index=False)
+        print(f"[{track.name}] stacked {len(oos):,} walk-forward OOS predictions "
+              f"for dispersion calibration")
     if not res.empty:
         res["MAE_gain_vs_r5_%"] = (100 * (res.MAE_base_r5 - res.MAE_model) / res.MAE_base_r5).round(1)
         pd.set_option("display.width", 200, "display.max_columns", 30)

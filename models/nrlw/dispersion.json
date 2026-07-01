@@ -1,50 +1,50 @@
 {
   "runsHitup": {
-    "alpha": 0.5171,
-    "beta": 0.1479,
+    "alpha": 1.009,
+    "beta": 0.4561,
     "sigma_floor": 1.0,
-    "global_sd": 1.145,
+    "global_sd": 2.643,
     "provisional": false,
-    "mean_pred": 2.89
+    "mean_pred": 2.88
   },
   "runs": {
-    "alpha": 1.4972,
-    "beta": 0.0443,
+    "alpha": 2.1696,
+    "beta": 0.1387,
     "sigma_floor": 1.8,
-    "global_sd": 1.955,
+    "global_sd": 3.367,
     "provisional": false,
-    "mean_pred": 8.46
+    "mean_pred": 8.27
   },
   "runMetres": {
-    "alpha": 16.1045,
-    "beta": 0.1353,
+    "alpha": 42.5779,
+    "beta": 0.0,
     "sigma_floor": 18.75,
-    "global_sd": 28.162,
+    "global_sd": 42.578,
     "provisional": true,
-    "mean_pred": 77.1
+    "mean_pred": 78.8
   },
   "postContactMetres": {
-    "alpha": 5.57,
-    "beta": 0.1886,
+    "alpha": 19.2212,
+    "beta": 0.0,
     "sigma_floor": 7.5,
-    "global_sd": 11.808,
+    "global_sd": 19.221,
     "provisional": true,
-    "mean_pred": 28.23
+    "mean_pred": 27.22
   },
   "tackles": {
-    "alpha": 2.1184,
-    "beta": 0.0955,
+    "alpha": 2.7548,
+    "beta": 0.2137,
     "sigma_floor": 2.5,
-    "global_sd": 3.775,
+    "global_sd": 6.191,
     "provisional": false,
-    "mean_pred": 15.24
+    "mean_pred": 14.81
   },
   "perf_points": {
-    "alpha": 2.7398,
-    "beta": 0.2761,
+    "alpha": 18.5243,
+    "beta": 0.0,
     "sigma_floor": 10.0,
-    "global_sd": 12.334,
+    "global_sd": 18.524,
     "provisional": true,
-    "mean_pred": 30.64
+    "mean_pred": 33.18
   }
 }

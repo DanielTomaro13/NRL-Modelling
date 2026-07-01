@@ -83,7 +83,7 @@ def build_team_markets(track):
         return {"matches": []}
     matches = []
     for _, r in tm.iterrows():
-        matches.append({
+        row = {
             "matchId": str(r.get("matchId")), "round": int(r["round"]) if pd.notna(r.get("round")) else None,
             "home": r.get("home"), "away": r.get("away"), "start": r.get("start_iso"),
             "pred_margin": _round(r.get("pred_margin"), 1), "pred_total": _round(r.get("pred_total"), 1),
@@ -92,7 +92,19 @@ def build_team_markets(track):
             "line_home": _round(r.get("line_home"), 1),
             "total_line": _round(r.get("total_line"), 1),
             "fair_over": _round(r.get("fair_over"), 2), "fair_under": _round(r.get("fair_under"), 2),
-        })
+        }
+        # best live book prices + EV, when the odds snapshot carried this match
+        # (men's cron only for now — fair-odds-only rows just omit these keys)
+        for k, nd in [("book_home", None), ("book_home_price", 2), ("ev_home", 1),
+                      ("book_away", None), ("book_away_price", 2), ("ev_away", 1),
+                      ("book_over", None), ("book_over_price", 2), ("book_total_line", 1), ("ev_over", 1),
+                      ("book_under", None), ("book_under_price", 2), ("book_under_line", 1), ("ev_under", 1),
+                      ("book_line", None), ("book_line_side", None), ("book_line_hcap", 1),
+                      ("book_line_price", 2), ("ev_line", 1)]:
+            v = r.get(k)
+            if v is not None and (not isinstance(v, float) or pd.notna(v)):
+                row[k] = _round(v, nd) if nd is not None else v
+        matches.append(row)
     matches.sort(key=lambda m: m.get("start") or "")
     return {"matches": matches}
 

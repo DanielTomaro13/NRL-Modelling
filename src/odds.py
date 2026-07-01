@@ -316,7 +316,19 @@ def sportsbet_event_rows(ev):
         base = {"book": "sportsbet", "event_name": ev["name"], "home": ev["home"],
                 "away": ev["away"], "start_iso": _sb_iso(ev.get("start")),
                 "market_raw": mname, "fetched_at": fetched}
-        rows.extend(_match_rows(mname, [(s.get("name"), (s.get("price") or {}).get("winPrice"), None)
+        # Sportsbet puts the handicap/total on the SELECTION, not in any name:
+        # displayHandicap is per-side signed ("-4.5"/"+4.5"); unformattedHandicap is
+        # the market's reference number (totals: the O/U line on both selections).
+        def _sb_pts(s):
+            for k in ("displayHandicap", "unformattedHandicap"):
+                v = s.get(k)
+                if v not in (None, ""):
+                    try:
+                        return float(str(v).replace("+", ""))
+                    except ValueError:
+                        pass
+            return None
+        rows.extend(_match_rows(mname, [(s.get("name"), (s.get("price") or {}).get("winPrice"), _sb_pts(s))
                                         for s in m.get("selections", [])],
                                 base, ev["home"], ev["away"]))
         if stat:  # player stat over/under prop
@@ -758,7 +770,10 @@ def fetch_pointsbet():
             outs = m.get("outcomes") or []
             kind = PB_TRY.get(mname.lower())
             base = {**base0, "market_raw": m.get("name", "")}
-            rows.extend(_match_rows(mname, [(o.get("name"), o.get("price"), o.get("points"))
+            # PB's `points` is a literal 0.0 on Line/Total markets (the real number
+            # lives in the outcome NAME, "Penrith Panthers -4.5" / "Over 45.5") —
+            # pass None for falsy points so _match_rows falls back to the name.
+            rows.extend(_match_rows(mname, [(o.get("name"), o.get("price"), o.get("points") or None)
                                             for o in outs], base, home, away))
             if kind:
                 for o in outs:
