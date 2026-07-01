@@ -239,7 +239,9 @@ def main():
         # own files; leave subdirectories alone.
         for f in os.listdir(OUT):
             p = os.path.join(OUT, f)
-            if os.path.isfile(p):
+            # supercoach.json is produced by supercoach.py on its own cadence —
+            # not ours to delete
+            if os.path.isfile(p) and f != "supercoach.json":
                 os.unlink(p)
     os.makedirs(OUT, exist_ok=True)
 
