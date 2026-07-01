@@ -233,7 +233,14 @@ def main():
     track = T.current()
     OUT = T.site_dir(track)
     if os.path.isdir(OUT):
-        shutil.rmtree(OUT)
+        # The men's legacy site dir is the SHARED ROOT (reports/site) and the other
+        # tracks' bundles live in subdirectories of it — rmtree here nukes the
+        # NRLW/Origin bundles every 3-hourly cron export. Only remove this track's
+        # own files; leave subdirectories alone.
+        for f in os.listdir(OUT):
+            p = os.path.join(OUT, f)
+            if os.path.isfile(p):
+                os.unlink(p)
     os.makedirs(OUT, exist_ok=True)
 
     rnd = None

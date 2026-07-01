@@ -1,0 +1,48 @@
+name: predict
+# Every 3h: re-scrape confirmed team lists and re-predict the round (player
+# props + match markets) so lineup changes flow through between the daily
+# trains in model.yml. No odds/pricing/site here — the AU odds cron owns those
+# (Sportsbet/TAB geo-block CI); it prices against the predictions committed
+# here. Mirrors AFL-Modelling's predict.yml.
+on:
+  schedule:
+    - cron: "30 */3 * * *"   # offset :30 so it lands between AU cron runs
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: nrl-publish          # shared with model.yml so commits never race
+  cancel-in-progress: false
+jobs:
+  predict:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      # Uses the committed models; run_round scrapes nrl.com team lists (men's)
+      # and writes round_predictions + team_predictions for the current round.
+      - run: python src/run_round.py
+        env:
+          TRACK: nrl
+      - name: Commit refreshed predictions
+        run: |
+          git config user.name  "nrl-model-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add data/processed reports
+          if git diff --cached --quiet; then
+            echo "No prediction changes to commit."
+            exit 0
+          fi
+          git commit -m "Refresh round predictions (lineups) [skip ci]"
+          for i in 1 2 3 4 5; do
+            git push origin HEAD:main && exit 0
+            echo "Push rejected (attempt $i) — rebasing onto latest main..."
+            git fetch origin main
+            git rebase -X theirs origin/main || { git rebase --abort; exit 1; }
+          done
+          echo "Failed to push after 5 attempts." >&2
+          exit 1
