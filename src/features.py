@@ -11,9 +11,7 @@ Outputs: data/processed/features.parquet
 """
 import numpy as np
 import pandas as pd
-
-IN = "data/processed/player_match.parquet"
-OUT = "data/processed/features.parquet"
+import tracks as T
 
 TARGETS = ["runsHitup", "runs", "runMetres", "postContactMetres", "tackles", "perf_points"]
 
@@ -93,6 +91,9 @@ def team_context(df):
 
 
 def main():
+    track = T.current()
+    IN = T.proc("player_match.parquet", track)
+    OUT = T.proc("features.parquet", track)
     df = pd.read_parquet(IN)
     df["utcStartTime"] = pd.to_datetime(df["utcStartTime"], utc=True)
     df = add_perf_points(df)
@@ -112,7 +113,8 @@ def main():
     out.attrs = {}
     # persist the feature list
     import json
-    with open("data/processed/feature_cols.json", "w") as f:
+    T.ensure_dirs(track)
+    with open(T.proc("feature_cols.json", track), "w") as f:
         json.dump({"features": feat_cols, "categorical": ["position"], "targets": TARGETS}, f, indent=2)
     out.to_parquet(OUT, index=False)
     print(f"Wrote {OUT}: {len(out)} rows, {len(feat_cols)} numeric features + position")

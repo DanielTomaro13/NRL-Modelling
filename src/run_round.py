@@ -6,22 +6,27 @@ Run from the repo root:  python src/run_round.py
 """
 import sys, subprocess, os
 import nrl_meta as M
+import tracks as T
 
 PY = sys.executable
 
 
 def main():
-    comp, meta = M.current_competition()
+    track = T.current()
+    comp, meta = M.current_competition(track)
     fx = M.fixture(comp)
     rnd = M.next_round(comp, fx)
     matches = M.round_matches(comp, rnd, fx)
-    print(f"Competition {comp} ({meta['name']}) — predicting round {rnd} "
+    print(f"[{track.name}] competition {comp} ({meta['name']}) — predicting round {rnd} "
           f"({len(matches)} matches)")
 
-    url = M.find_teamlist_url(rnd, matches, meta.get("season"))
-    lineups = f"data/processed/lineups_r{rnd}.parquet"
+    lineups = T.proc(f"lineups_r{rnd}.parquet", track)
     predict_args = [PY, "src/predict.py", str(comp), str(rnd)]
 
+    # confirmed nrl.com team lists are men's-NRL-only (slug + format differ for NRLW /
+    # Origin); other tracks use the most-recent-XVIII proxy until track-specific
+    # scrapers exist.
+    url = M.find_teamlist_url(rnd, matches, meta.get("season")) if track.name == "nrl" else None
     if url:
         print(f"Confirmed team lists: {url}")
         try:
@@ -30,14 +35,18 @@ def main():
             if os.path.exists(lineups):
                 predict_args.append(lineups)
         except subprocess.CalledProcessError as e:
-            print(f"team-list scrape failed ({e}); falling back to XVII proxy")
+            print(f"team-list scrape failed ({e}); falling back to XVIII proxy")
     else:
-        print("No published team-list URL found yet; using most-recent-XVII proxy")
+        print("Using most-recent-XVIII proxy lineups")
 
-    subprocess.run(predict_args, check=True)
-    os.makedirs("reports", exist_ok=True)
-    open("reports/current_round.txt", "w").write(str(rnd))
-    print(f"Predicted round {rnd}.")
+    env = {**os.environ, "TRACK": track.name}
+    subprocess.run(predict_args, check=True, env=env)
+    # match-outcome markets for the same round
+    subprocess.run([PY, "src/team_model.py", "predict", str(comp), str(rnd)],
+                   check=False, env=env)
+    T.ensure_dirs(track)
+    open(T.report("current_round.txt", track), "w").write(str(rnd))
+    print(f"[{track.name}] predicted round {rnd}.")
 
 
 if __name__ == "__main__":

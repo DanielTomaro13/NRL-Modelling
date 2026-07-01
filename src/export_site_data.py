@@ -18,16 +18,15 @@ import datetime as dt
 import json
 import os
 import shutil
+import glob
 import pandas as pd
+import tracks as T
 
 AEST = dt.timezone(dt.timedelta(hours=10))
 
 
 def now_aest():
     return dt.datetime.now(AEST)
-
-
-OUT = "reports/site"
 
 
 def _load(path):
@@ -41,10 +40,10 @@ def _round(x, n=2):
     return round(float(x), n) if pd.notna(x) else None
 
 
-def build_predictions():
+def build_predictions(track):
     """Per-match player rows with the headline model projections."""
-    tdf = _load("reports/tryscorer_predictions.parquet")
-    pdf = _load("reports/player_points_predictions.parquet")
+    tdf = _load(T.report("tryscorer_predictions.parquet", track))
+    pdf = _load(T.report("player_points_predictions.parquet", track))
     if not len(tdf) and not len(pdf):
         return {"matches": []}
     cols_t = ["playerId", "name", "team", "opp", "position", "matchId",
@@ -54,7 +53,7 @@ def build_predictions():
          if len(pdf) else pd.DataFrame(columns=["playerId"]))
     df = t.merge(p, on="playerId", how="outer") if len(t) else pdf
     # expected performance (fantasy) points from the round predictions
-    rdf = _load("reports/round_predictions.parquet")
+    rdf = _load(T.report("round_predictions.parquet", track))
     if len(rdf) and "pred_perf_points" in rdf:
         df = df.merge(rdf[["playerId", "pred_perf_points"]], on="playerId", how="left")
     matches = []
@@ -77,9 +76,30 @@ def build_predictions():
     return {"matches": matches}
 
 
-def build_scoring():
+def build_team_markets(track):
+    """Model fair odds for H2H / line / total per match (match-outcome model)."""
+    tm = _load(T.report("team_edges.parquet", track))
+    if not len(tm):
+        return {"matches": []}
+    matches = []
+    for _, r in tm.iterrows():
+        matches.append({
+            "matchId": str(r.get("matchId")), "round": int(r["round"]) if pd.notna(r.get("round")) else None,
+            "home": r.get("home"), "away": r.get("away"), "start": r.get("start_iso"),
+            "pred_margin": _round(r.get("pred_margin"), 1), "pred_total": _round(r.get("pred_total"), 1),
+            "p_home": _round(r.get("p_home"), 3), "p_away": _round(r.get("p_away"), 3),
+            "fair_home": _round(r.get("fair_home"), 2), "fair_away": _round(r.get("fair_away"), 2),
+            "line_home": _round(r.get("line_home"), 1),
+            "total_line": _round(r.get("total_line"), 1),
+            "fair_over": _round(r.get("fair_over"), 2), "fair_under": _round(r.get("fair_under"), 2),
+        })
+    matches.sort(key=lambda m: m.get("start") or "")
+    return {"matches": matches}
+
+
+def build_scoring(track):
     """Player-points edges (model price + best book) + top try scorers."""
-    pe = _load("reports/points_edges.parquet")
+    pe = _load(T.report("points_edges.parquet", track))
     points = []
     if len(pe):
         pe = pe[pe["stat"] == "points"] if "stat" in pe else pe
@@ -96,7 +116,7 @@ def build_scoring():
                 "my_price": _round(e.get("my_price"), 2), "book": e.get("book"),
                 "best_price": _round(e.get("best_price"), 2), "ev": _round(e.get("ev_pct"), 1),
             })
-    tdf = _load("reports/tryscorer_predictions.parquet")
+    tdf = _load(T.report("tryscorer_predictions.parquet", track))
     tries = []
     if len(tdf):
         for _, r in tdf.sort_values("p_anytime", ascending=False).head(60).iterrows():
@@ -106,14 +126,13 @@ def build_scoring():
     return {"points": points, "tries": tries}
 
 
-def build_lineups():
+def build_lineups(track):
     """Confirmed team lists per match, with the designated goal kicker flagged."""
-    import glob
-    files = sorted(glob.glob("data/processed/lineups_r*.parquet"))
+    files = sorted(glob.glob(T.proc("lineups_r*.parquet", track)))
     if not files:
         return {"matches": []}
     lu = pd.read_parquet(files[-1])   # latest round's confirmed lists
-    pp = _load("reports/player_points_predictions.parquet")
+    pp = _load(T.report("player_points_predictions.parquet", track))
     team_of, lg_of = {}, {}
     if len(pp):
         team_of = dict(zip(pp["playerId"], pp["team"]))
@@ -163,10 +182,10 @@ def _read_json(path):
         return {}
 
 
-def build_backtest():
+def build_backtest(track):
     """Out-of-sample accuracy: try-scorer classification + per-stat regression MAE."""
-    analysis = _read_json("reports/analysis.json")
-    ts = _read_json("reports/tryscorer.json")
+    analysis = _read_json(T.report("analysis.json", track))
+    ts = _read_json(T.report("tryscorer.json", track))
     abt = analysis.get("backtest", {})
     tbt = ts.get("backtest", {})
 
@@ -199,34 +218,48 @@ def build_backtest():
 
 
 def main():
+    track = T.current()
+    OUT = T.site_dir(track)
     if os.path.isdir(OUT):
         shutil.rmtree(OUT)
     os.makedirs(OUT, exist_ok=True)
 
     rnd = None
     try:
-        preds = pd.read_parquet("reports/round_predictions.parquet")
+        preds = pd.read_parquet(T.report("round_predictions.parquet", track))
         if "roundNumber" in preds:
             rnd = int(preds["roundNumber"].iloc[0])
     except Exception:
         pass
-    meta = {"round": rnd, "updated": now_aest().strftime("%a %d %b %Y, %I:%M%p AEST"),
+    # which player-prop targets are provisional (low-sample) for this track
+    provisional = []
+    try:
+        import joblib
+        bundle = joblib.load(T.model_for_prediction("nrl_models.joblib", track))
+        provisional = sorted(t for t, m in bundle.get("targets_meta", {}).items()
+                             if m.get("provisional"))
+    except Exception:
+        pass
+    meta = {"comp": track.name, "label": track.label, "round": rnd,
+            "provisional_targets": provisional,
+            "updated": now_aest().strftime("%a %d %b %Y, %I:%M%p AEST"),
             "generated": pd.Timestamp.now("UTC").isoformat()}
     json.dump(meta, open(f"{OUT}/meta.json", "w"))
-    json.dump(build_predictions(), open(f"{OUT}/predictions.json", "w"))
-    json.dump(build_scoring(), open(f"{OUT}/scoring.json", "w"))
-    json.dump(build_backtest(), open(f"{OUT}/backtest.json", "w"))
-    json.dump(build_lineups(), open(f"{OUT}/lineups.json", "w"))
+    json.dump(build_predictions(track), open(f"{OUT}/predictions.json", "w"))
+    json.dump(build_scoring(track), open(f"{OUT}/scoring.json", "w"))
+    json.dump(build_backtest(track), open(f"{OUT}/backtest.json", "w"))
+    json.dump(build_lineups(track), open(f"{OUT}/lineups.json", "w"))
+    json.dump(build_team_markets(track), open(f"{OUT}/team.json", "w"))
 
     # reuse the rich JSON already produced by compare.py / pickem.py verbatim
     for name in ("comparison", "pickem"):
-        src = f"reports/{name}.json"
+        src = T.report(f"{name}.json", track)
         if os.path.exists(src):
             dst = f"{OUT}/{'compare' if name == 'comparison' else name}.json"
             shutil.copyfile(src, dst)
 
     sizes = {f: os.path.getsize(f"{OUT}/{f}") for f in sorted(os.listdir(OUT))}
-    print(f"Wrote {OUT}/ :")
+    print(f"[{track.name}] wrote {OUT}/ :")
     for f, s in sizes.items():
         print(f"  {s:>9,d}  {f}")
 

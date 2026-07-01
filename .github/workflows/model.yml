@@ -30,35 +30,32 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: Ingest Champion Data feeds (incremental — cached matches reused)
-        run: python src/ingest.py
+      - run: chmod +x scripts/run_track.sh
 
-      - name: Build features
-        run: python src/features.py
+      # Men's NRL: full train + predict (same stages as before). The site bundle is
+      # left to the local AU odds cron, which prices these predictions against the
+      # live books and rebuilds the men's bundle.
+      - name: "NRL — ingest, train, predict"
+        run: scripts/run_track.sh nrl
 
-      - name: Train models + calibrate dispersion
-        run: python src/train.py
+      # NRLW: own trained models + match-outcome markets + site bundle exported here
+      # in CI (no AU-book odds needed for the model/projection pages).
+      - name: "NRLW — train, predict, match markets, export"
+        run: scripts/run_track.sh nrlw
 
-      - name: Scrape team lists + predict the round
-        run: python src/run_round.py
+      # State of Origin reuses the club models, so it MUST run after nrl/nrlw which
+      # produce those models on disk in the steps above.
+      - name: "State of Origin (men's) — predict + export"
+        run: scripts/run_track.sh soo
 
-      - name: Champion Data analysis + backtest + feature importance
-        run: python src/analysis.py
+      - name: "State of Origin (women's) — predict + export"
+        run: scripts/run_track.sh soow
 
-      - name: Train try-scorer model + backtest + predict
-        run: python src/tryscorer.py
-
-      - name: Train goal-kicking model + backtest + predict
-        run: python src/kicker.py
-
-      - name: Player-points model (try + kicker) + backtest + predict
-        run: python src/player_points.py
-
-      # Odds, pricing, the site bundle and the nrl24-0.com redeploy are intentionally
-      # NOT run here. The AU books (Sportsbet/TAB) geo-block GitHub's US runners, so
-      # the odds→price→site→redeploy pipeline runs from a local AU cron every 3h
-      # (scripts/odds-cron.sh, all five books fresh). This job only updates the model
-      # and predictions; the next cron run prices them and rebuilds the site.
+      # Men's odds, pricing and the nrl24-0.com redeploy are intentionally NOT run
+      # here. The AU books (Sportsbet/TAB) geo-block GitHub's US runners, so the
+      # men's odds→price→site→redeploy pipeline runs from a local AU cron every 3h
+      # (scripts/odds-cron.sh, all five books fresh). NRLW/Origin have their bundles
+      # exported above; the next cron run prices men's and rebuilds its site.
       - name: Commit results
         run: |
           git config user.name  "github-actions[bot]"
@@ -82,3 +79,20 @@ jobs:
           done
           echo "Failed to push after 5 attempts." >&2
           exit 1
+
+      # Rebuild nrl24-0.com so the freshly-committed NRLW + Origin bundles go live.
+      # (Men's odds/site are handled separately by the AU cron's own dispatch.)
+      - name: Trigger nrl24-0.com redeploy
+        env:
+          NRL240_DISPATCH_TOKEN: ${{ secrets.NRL240_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "${NRL240_DISPATCH_TOKEN}" ]; then
+            echo "No NRL240_DISPATCH_TOKEN secret; skipping redeploy."
+            exit 0
+          fi
+          curl -sf -X POST \
+            -H "Authorization: Bearer $NRL240_DISPATCH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/DanielTomaro13/NRL-24-0/dispatches \
+            -d '{"event_type":"model-data-updated"}' \
+            && echo "Dispatched model-data-updated to NRL-24-0"

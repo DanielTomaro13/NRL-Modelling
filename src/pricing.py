@@ -24,6 +24,7 @@ import sys, json, math
 import numpy as np
 import pandas as pd
 from scipy.stats import norm
+import tracks as T
 
 TARGETS = ["runsHitup", "runs", "runMetres", "postContactMetres", "tackles", "perf_points"]
 STAT_TO_TARGET = {
@@ -39,21 +40,33 @@ SIGMA_FLOOR = {"runsHitup": 1.0, "runs": 1.8, "runMetres": 15.0,
 
 
 # --------------------------------------------------------------------------- calibration
-def calibrate_dispersion(features="data/processed/features.parquet",
-                         model="models/nrl_models.joblib",
-                         meta="data/processed/feature_cols.json",
-                         out=DISP_PATH, holdout_seasons=(2023, 2024, 2025)):
-    """Fit sigma(mu) = alpha + beta*mu per target from out-of-time residuals."""
+def calibrate_dispersion(track=None, features=None, model=None, meta=None, out=None):
+    """Fit sigma(mu) = alpha + beta*mu per target from out-of-time residuals.
+
+    Residuals are taken from the track's holdout seasons, except for provisional
+    targets (e.g. NRLW run metres, only captured from train_max) which calibrate
+    on that single season.
+    """
     import joblib
+    track = track or T.current()
+    features = features or T.proc("features.parquet", track)
+    model = model or T.model("nrl_models.joblib", track)
+    meta = meta or T.proc("feature_cols.json", track)
+    out = out or T.model("dispersion.json", track)
+
     df = pd.read_parquet(features)
     feats = json.load(open(meta))["features"]
     bundle = joblib.load(model)
-    te = df[df.season.isin(holdout_seasons)].copy()
-    X = te[feats + ["position"]].copy()
-    X["position"] = X["position"].astype("category")
+    avail = set(bundle["models"])
 
     disp = {}
     for t in TARGETS:
+        if t not in avail:
+            continue  # target not modelled for this track
+        seasons = (track.train_max,) if t in track.provisional_targets else track.holdouts
+        te = df[df.season.isin(seasons)].copy()
+        X = te[feats + ["position"]].copy()
+        X["position"] = X["position"].astype("category")
         pred = np.clip(bundle["models"][t].predict(X), 0, None)
         resid = te[t].values - pred
         # bin by predicted decile; robust per-bin residual std; fit sigma ~ mu
@@ -72,9 +85,16 @@ def calibrate_dispersion(features="data/processed/features.parquet",
             alpha = max(alpha, 0.0)
         else:
             alpha, beta = float(resid.std()), 0.0
+        # Provisional targets calibrate on a single (train_max) season the final model
+        # was fit on, so residuals are in-sample and biased low -> widen sigma by a
+        # safety margin until multi-season data allows an out-of-sample calibration.
+        # (Latent until NRLW book odds are wired; keeps over/under prices conservative.)
+        infl = 1.25 if t in track.provisional_targets else 1.0
+        alpha *= infl; beta *= infl
         disp[t] = {"alpha": round(float(alpha), 4), "beta": round(float(beta), 4),
-                   "sigma_floor": SIGMA_FLOOR.get(t, 1.0),
-                   "global_sd": round(float(resid.std()), 3),
+                   "sigma_floor": round(SIGMA_FLOOR.get(t, 1.0) * infl, 3),
+                   "global_sd": round(float(resid.std()) * infl, 3),
+                   "provisional": t in track.provisional_targets,
                    "mean_pred": round(float(pred.mean()), 2)}
     json.dump(disp, open(out, "w"), indent=2)
     print(f"Wrote {out}")
@@ -84,7 +104,8 @@ def calibrate_dispersion(features="data/processed/features.parquet",
     return disp
 
 
-def load_dispersion(path=DISP_PATH):
+def load_dispersion(path=None):
+    path = path or T.model("dispersion.json")
     try:
         return json.load(open(path))
     except FileNotFoundError:
@@ -146,10 +167,12 @@ def ev_per_dollar(p_win, p_push, price):
 
 
 # --------------------------------------------------------------------------- price a snapshot
-def price_snapshot(odds_path="reports/odds_snapshot.parquet",
-                   preds_path="reports/round_predictions.parquet",
-                   disp_path=DISP_PATH,
-                   out_parquet="reports/edges.parquet", out_json="reports/edges.json"):
+def price_snapshot(odds_path=None, preds_path=None, disp_path=None,
+                   out_parquet=None, out_json=None):
+    odds_path = odds_path or T.report("odds_snapshot.parquet")
+    preds_path = preds_path or T.report("round_predictions.parquet")
+    out_parquet = out_parquet or T.report("edges.parquet")
+    out_json = out_json or T.report("edges.json")
     odds = pd.read_parquet(odds_path)
     preds = pd.read_parquet(preds_path)
     disp = load_dispersion(disp_path)
@@ -217,6 +240,132 @@ def price_snapshot(odds_path="reports/odds_snapshot.parquet",
     return edges
 
 
+# --------------------------------------------------------------------------- match markets (H2H / line / total)
+def _norm(s):
+    import re as _re
+    return _re.sub(r"[^a-z]", "", (s or "").lower())
+
+
+def _best_match_odds(mk, home, away):
+    """From a book match-market snapshot for one event, return best available
+    head-to-head prices per side + total over/under prices, keyed by book."""
+    hk, ak = _norm(home), _norm(away)
+    best = {"home": (None, None), "away": (None, None),   # (price, book)
+            "line": [], "total_over": (None, None), "total_under": (None, None),
+            "total_line": None}
+    for _, r in mk.iterrows():
+        stat, kind, price = r.get("stat"), r.get("kind"), r.get("single")
+        if stat == "head_to_head" and price and kind in ("home", "away"):
+            if best[kind][0] is None or price > best[kind][0]:
+                best[kind] = (float(price), r.get("book"))
+        elif stat == "line" and price and kind in ("home", "away"):
+            best["line"].append((kind, r.get("line"), float(price), r.get("book")))
+        elif stat == "total":
+            if r.get("over"):
+                if best["total_over"][0] is None or r["over"] > best["total_over"][0]:
+                    best["total_over"] = (float(r["over"]), r.get("book"))
+            if r.get("under"):
+                if best["total_under"][0] is None or r["under"] > best["total_under"][0]:
+                    best["total_under"] = (float(r["under"]), r.get("book"))
+            if r.get("line") is not None:
+                best["total_line"] = float(r["line"])
+    return best
+
+
+def team_markets(track=None):
+    """Model fair odds for head-to-head, line (handicap) and total, from the
+    match-outcome model's per-match margin/total predictions, plus EV against the
+    live book match markets in the odds snapshot (category=="match") if present.
+
+    margin ~ Normal(mu_m, sd_m): P(home win) = Phi(mu_m / sd_m); line cover at
+    handicap h (home -h) = P(margin > h). total ~ Normal(mu_t, sd_t): priced with
+    the same push-band CDF as player props.
+    """
+    track = track or T.current()
+    tp_path = T.report("team_predictions.parquet", track)
+    try:
+        tp = pd.read_parquet(tp_path)
+    except FileNotFoundError:
+        print(f"no {tp_path} — run team_model.py predict first")
+        return pd.DataFrame()
+
+    # optional live book match markets
+    try:
+        odds = pd.read_parquet(T.report("odds_snapshot.parquet", track))
+        odds = odds[odds.get("category") == "match"] if "category" in odds else odds.iloc[0:0]
+    except Exception:
+        odds = pd.DataFrame()
+
+    rows = []
+    for _, r in tp.iterrows():
+        mu_m, sd_m = float(r["pred_margin"]), max(float(r["sigma_margin"]), 1e-6)
+        mu_t, sd_t = float(r["pred_total"]), max(float(r["sigma_total"]), 1e-6)
+        p_home = float(norm.cdf(mu_m / sd_m))           # P(margin > 0)
+        line = round(mu_m * 2) / 2                       # model's fair handicap (home -line)
+        total_line = round(mu_t * 2) / 2
+        p_over, p_under, _ = over_under_probs(mu_t, sd_t, total_line)
+        row = {
+            "matchId": r["matchId"], "round": int(r["roundNumber"]),
+            "home": r["home"], "away": r["away"], "start_iso": r.get("start_iso"),
+            "pred_margin": round(mu_m, 1), "pred_total": round(mu_t, 1),
+            "p_home": round(p_home, 3), "p_away": round(1 - p_home, 3),
+            "fair_home": fair_odds(p_home), "fair_away": fair_odds(1 - p_home),
+            "line_home": -line, "line_away": line,
+            "total_line": total_line, "p_over": round(p_over, 3), "p_under": round(p_under, 3),
+            "fair_over": fair_odds(p_over), "fair_under": fair_odds(p_under),
+        }
+        # match this event's book rows by team names and compute EV on best prices
+        if len(odds):
+            hk, ak = _norm(r["home"]), _norm(r["away"])
+            mk = odds[odds.apply(lambda x: {_norm(x.get("home")), _norm(x.get("away"))}
+                                 == {hk, ak}, axis=1)]
+            if len(mk):
+                b = _best_match_odds(mk, r["home"], r["away"])
+                if b["home"][0]:
+                    row.update(book_home=b["home"][1], book_home_price=b["home"][0],
+                               ev_home=round((p_home * b["home"][0] - 1) * 100, 1))
+                if b["away"][0]:
+                    row.update(book_away=b["away"][1], book_away_price=b["away"][0],
+                               ev_away=round(((1 - p_home) * b["away"][0] - 1) * 100, 1))
+                if b["total_over"][0] and b["total_line"] is not None:
+                    po, _, _ = over_under_probs(mu_t, sd_t, b["total_line"])
+                    row.update(book_over=b["total_over"][1], book_over_price=b["total_over"][0],
+                               book_total_line=b["total_line"],
+                               ev_over=round((po * b["total_over"][0] - 1) * 100, 1))
+                if b["total_under"][0] and b["total_line"] is not None:
+                    _, pu, _ = over_under_probs(mu_t, sd_t, b["total_line"])
+                    row.update(book_under=b["total_under"][1], book_under_price=b["total_under"][0],
+                               ev_under=round((pu * b["total_under"][0] - 1) * 100, 1))
+                # best line: model P(margin > handicap) vs each posted home/away line
+                best_line_ev = None
+                for kind, hcap, price, book in b["line"]:
+                    if hcap is None:
+                        continue
+                    p = (1 - float(norm.cdf((hcap - mu_m) / sd_m))) if kind == "home" \
+                        else float(norm.cdf((hcap - mu_m) / sd_m))
+                    ev = (p * price - 1) * 100
+                    if best_line_ev is None or ev > best_line_ev["ev_line"]:
+                        best_line_ev = {"book_line": book, "book_line_side": kind,
+                                        "book_line_hcap": hcap, "book_line_price": price,
+                                        "ev_line": round(ev, 1)}
+                if best_line_ev:
+                    row.update(best_line_ev)
+        rows.append(row)
+    out = pd.DataFrame(rows)
+
+    T.ensure_dirs(track)
+    out.to_parquet(T.report("team_edges.parquet", track), index=False)
+    out.to_json(T.report("team_markets.json", track), orient="records")
+    n_ev = int(out["ev_home"].notna().sum()) if "ev_home" in out else 0
+    print(f"[{track.name}] wrote {T.report('team_markets.json', track)}: {len(out)} matches, "
+          f"{n_ev} with live H2H odds")
+    if len(out):
+        show = [c for c in ["home", "away", "p_home", "fair_home", "book_home_price",
+                            "ev_home", "fair_over", "fair_under"] if c in out]
+        print(out[show].to_string(index=False))
+    return out
+
+
 # --------------------------------------------------------------------------- try-scorer pricing
 def _try_market(market_raw, line):
     """Classify a try odds row into anytime / 2+ / 3+ / first (skip first)."""
@@ -235,10 +384,12 @@ def _try_market(market_raw, line):
     return "anytime"
 
 
-def price_tries(odds_path="reports/odds_snapshot.parquet",
-                pred_path="reports/tryscorer_predictions.parquet",
-                out_parquet="reports/try_edges.parquet", out_json="reports/try_edges.json"):
+def price_tries(odds_path=None, pred_path=None, out_parquet=None, out_json=None):
     """Value live try-scorer odds against the try model's calibrated probabilities."""
+    odds_path = odds_path or T.report("odds_snapshot.parquet")
+    pred_path = pred_path or T.report("tryscorer_predictions.parquet")
+    out_parquet = out_parquet or T.report("try_edges.parquet")
+    out_json = out_json or T.report("try_edges.json")
     try:
         odds = pd.read_parquet(odds_path)
         preds = pd.read_parquet(pred_path)
@@ -328,5 +479,7 @@ if __name__ == "__main__":
         price_snapshot()
     elif cmd == "tries":
         price_tries()
+    elif cmd == "team":
+        team_markets()
     else:
         selftest()

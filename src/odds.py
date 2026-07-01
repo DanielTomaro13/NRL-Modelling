@@ -22,6 +22,7 @@ from urllib.error import HTTPError, URLError
 import pandas as pd
 
 import nrl_meta as M
+import tracks as T
 
 # -----------------------------------------------------------------------------
 # canonical stat keys (align with model targets where possible)
@@ -78,7 +79,86 @@ NON_PLAYER_LEAD = {
 OVER_RE = re.compile(r"\bover\b", re.I)
 UNDER_RE = re.compile(r"\bunder\b", re.I)
 NUM_RE = re.compile(r"(\d+(?:\.\d+)?)")
+SIGNED_NUM_RE = re.compile(r"([+-]?\d+(?:\.\d+)?)")
 PLUS_RE = re.compile(r"(\d+)\s*\+")
+
+# ---- match (team) markets: head-to-head, line/handicap, total points ----------
+# Books name these a handful of ways; match the whole market title. Kept strict so
+# the many derivative markets (half-time, winning margin, race-to-N, ...) are skipped.
+# NOTE: these titles are best-effort and UNVERIFIED against the live AU feeds
+# (Sportsbet/TAB geo-block US runners) — confirm each book's exact naming from a real
+# AU snapshot and adjust as needed.
+H2H_RE = re.compile(r"^(head\s*to\s*head|h2h|match\s*(result|betting|odds|winner)|"
+                    r"money\s*line|to\s*win\s*(the\s*)?match|result)$", re.I)
+LINE_RE = re.compile(r"^(line|handicap|match\s*handicap|point\s*start|"
+                     r"line\s*betting|handicap\s*betting)(\s*\(.*\))?$", re.I)
+TOTAL_RE = re.compile(r"^(total\s*(match\s*)?points(\s*over/under)?|total\s*points\s*"
+                      r"scored|over\s*/?\s*under(\s*total)?|points\s*total|match\s*total)"
+                      r"(\s*\(.*\))?$", re.I)
+
+
+def _signed_num(s):
+    m = SIGNED_NUM_RE.search(s or "")
+    return float(m.group(1)) if m else None
+
+
+def _match_rows(mname, outs, base, home, away):
+    """Extract head-to-head / line / total rows from a team market.
+
+    `outs` is a normalised list of (selection_name, price, points_or_None) for the
+    book. Returns [] for any market whose title isn't H2H/line/total, so it is safe
+    to call on EVERY market. Emits category="match" rows:
+      head_to_head: kind=home|away, team, single price
+      line:         kind=home|away, team, line=handicap, single price
+      total:        line=total, over, under
+    """
+    low = (mname or "").strip().lower()
+    hk, ak = norm_team(home), norm_team(away)
+
+    def side_of(nm):
+        k = norm_team(nm)
+        if k and hk and (k == hk or k in hk or hk in k):
+            return "home"
+        if k and ak and (k == ak or k in ak or ak in k):
+            return "away"
+        return None
+
+    rows = []
+    if H2H_RE.match(low):
+        for nm, pr, _pts in outs:
+            side = side_of(nm)
+            if pr is None or side is None:
+                continue
+            rows.append({**base, "category": "match", "stat": "head_to_head", "kind": side,
+                         "player": None, "team": home if side == "home" else away,
+                         "line": None, "over": None, "under": None, "single": float(pr),
+                         "selection_raw": nm})
+    elif LINE_RE.match(low):
+        for nm, pr, pts in outs:
+            side = side_of(nm)
+            if pr is None or side is None:
+                continue
+            hcap = pts if pts is not None else _signed_num(nm)
+            rows.append({**base, "category": "match", "stat": "line", "kind": side,
+                         "player": None, "team": home if side == "home" else away,
+                         "line": hcap, "over": None, "under": None, "single": float(pr),
+                         "selection_raw": nm})
+    elif TOTAL_RE.match(low):
+        over = under = line = None
+        for nm, pr, pts in outs:
+            num = pts if pts is not None else (
+                float(NUM_RE.search(nm).group(1)) if NUM_RE.search(nm) else None)
+            if OVER_RE.search(nm):
+                over = pr; line = num if num is not None else line
+            elif UNDER_RE.search(nm):
+                under = pr; line = num if num is not None else line
+        if over is not None or under is not None:
+            rows.append({**base, "category": "match", "stat": "total", "kind": None,
+                         "player": None, "team": None, "line": line,
+                         "over": float(over) if over else None,
+                         "under": float(under) if under else None,
+                         "single": None, "selection_raw": ""})
+    return rows
 
 
 def _try_kind(market_raw):
@@ -236,6 +316,9 @@ def sportsbet_event_rows(ev):
         base = {"book": "sportsbet", "event_name": ev["name"], "home": ev["home"],
                 "away": ev["away"], "start_iso": _sb_iso(ev.get("start")),
                 "market_raw": mname, "fetched_at": fetched}
+        rows.extend(_match_rows(mname, [(s.get("name"), (s.get("price") or {}).get("winPrice"), None)
+                                        for s in m.get("selections", [])],
+                                base, ev["home"], ev["away"]))
         if stat:  # player stat over/under prop
             line, over, under = _sb_pair_overunder(m)
             if over is not None or under is not None:
@@ -369,6 +452,8 @@ def ladbrokes_event_rows(ev):
                 "start_iso": _lad_iso(ev.get("start")), "market_raw": mname,
                 "fetched_at": fetched}
         ents = by_market.get(mid, [])
+        rows.extend(_match_rows(mname, [(e.get("name"), entrant_price(e["id"]), None)
+                                        for e in ents], base, home, away))
         if stat:
             over = under = line = None
             for e in ents:
@@ -539,6 +624,7 @@ def dabble_fixture_rows(creq, headers, fixture):
         base = {"book": "dabble", "event_name": name, "home": home, "away": away,
                 "start_iso": fixture.get("advertisedStart"), "market_raw": mname,
                 "fetched_at": fetched}
+        rows.extend(_match_rows(mname, [(nm, pr, None) for nm, pr in outs], base, home, away))
         # try-scorer markets (selections are players)
         if TRYSCORER_RE.match(mname):
             for nm, pr in outs:
@@ -672,6 +758,8 @@ def fetch_pointsbet():
             outs = m.get("outcomes") or []
             kind = PB_TRY.get(mname.lower())
             base = {**base0, "market_raw": m.get("name", "")}
+            rows.extend(_match_rows(mname, [(o.get("name"), o.get("price"), o.get("points"))
+                                            for o in outs], base, home, away))
             if kind:
                 for o in outs:
                     pr = o.get("price")
@@ -772,6 +860,8 @@ def fetch_tab():
             props = mk.get("propositions", [])
             base = {"book": "tab", "event_name": name, "home": home, "away": away,
                     "start_iso": match.get("startTime"), "market_raw": bo, "fetched_at": fetched}
+            rows.extend(_match_rows(bo, [(p.get("name"), p.get("returnWin"), None)
+                                         for p in props], base, home, away))
             kind = TAB_TRY.get(bo.lower())
             if kind in ("anytime", "2+", "3+"):
                 for p in props:
@@ -875,6 +965,22 @@ CARRY_MAX_HOURS = 48
 
 
 def main():
+    track = T.current()
+    T.ensure_dirs(track)
+    # The book fetchers target the men's NRL competitions (comp ids / "NRL" names are
+    # hard-coded per book). NRLW / Origin book odds need per-book competition discovery
+    # (their NRLW comp ids differ) — not wired yet, so for non-men's tracks we write an
+    # empty snapshot rather than mislabelling men's odds as that track's.
+    if track.name != "nrl":
+        cols = ["book", "event_name", "home", "away", "start_iso", "category", "stat",
+                "kind", "player", "team", "line", "over", "under", "single", "market_raw",
+                "selection_raw", "fetched_at", "playerId", "matched_team"]
+        empty = pd.DataFrame(columns=cols)
+        empty.to_parquet(T.report("odds_snapshot.parquet", track), index=False)
+        empty.to_json(T.report("odds_snapshot.json", track), orient="records")
+        print(f"[{track.name}] book odds not wired for this track — wrote empty snapshot")
+        return
+
     fetched = {}
     for name, fn in [("sportsbet", fetch_sportsbet), ("ladbrokes", fetch_ladbrokes),
                      ("dabble", fetch_dabble), ("pointsbet", fetch_pointsbet),
@@ -890,7 +996,7 @@ def main():
     missing = [b for b in ALL_BOOKS if not fetched.get(b)]
     if missing:
         try:
-            prev = pd.read_parquet("reports/odds_snapshot.parquet")
+            prev = pd.read_parquet(T.report("odds_snapshot.parquet", track))
         except Exception:
             prev = pd.DataFrame()
         if len(prev) and "book" in prev:
@@ -916,15 +1022,15 @@ def main():
         df["kind"] = None
 
     try:
-        preds = pd.read_parquet("reports/round_predictions.parquet")
+        preds = pd.read_parquet(T.report("round_predictions.parquet", track))
         df = attach_player_ids(df, preds)
     except Exception as e:
         print("  [match] skipped:", repr(e))
         df["playerId"] = None
         df["matched_team"] = None
 
-    df.to_parquet("reports/odds_snapshot.parquet", index=False)
-    df.to_json("reports/odds_snapshot.json", orient="records")
+    df.to_parquet(T.report("odds_snapshot.parquet", track), index=False)
+    df.to_json(T.report("odds_snapshot.json", track), orient="records")
     n_player = int((df["category"] == "player").sum()) if len(df) else 0
     n_matched = int(df["playerId"].notna().sum()) if "playerId" in df else 0
     print(f"\nWrote reports/odds_snapshot.* : {len(df)} rows "
