@@ -256,8 +256,24 @@ def price_snapshot(odds_path=None, preds_path=None, disp_path=None,
 
 # --------------------------------------------------------------------------- match markets (H2H / line / total)
 def _norm(s):
+    """Team-name key: lowercase alpha only, with sponsor/gender/city noise removed
+    so book names line up with Champion Data names across comps —
+    "Cronulla Sharks Women" == "Cronulla-Sutherland Sharks",
+    "Canterbury Bulldogs" == "Canterbury-Bankstown Bulldogs"."""
     import re as _re
-    return _re.sub(r"[^a-z]", "", (s or "").lower())
+    t = (s or "").lower()
+    t = _re.sub(r"\b(women|womens|w)\b\.?", "", t)
+    key = _re.sub(r"[^a-z]", "", t)
+    # nickname-level fallback aliases: keep the last word (the club nickname) when
+    # comparing hyphenated-district names — implemented by mapping known districts
+    for full, short in (("cronullasutherland", "cronulla"),
+                        ("canterburybankstown", "canterbury"),
+                        ("manlywarringah", "manly"),
+                        ("stgeorgeillawarra", "stgeorge"),
+                        ("newzealandwarriors", "warriors"),
+                        ("gcgoldcoast", "goldcoast")):
+        key = key.replace(full, short)
+    return key
 
 
 TOTAL_LINE_MIN = 20.0    # an NRL total below this is a parse artifact, not a market

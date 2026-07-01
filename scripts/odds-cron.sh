@@ -35,6 +35,13 @@ git pull --rebase --autostash origin main || { echo "$(ts) pull failed"; exit 1;
 "$PY" src/export_site_data.py || echo "$(ts) export nonzero"
 "$PY" src/build_site.py      || { echo "$(ts) build_site failed"; exit 1; }
 
+# NRLW match odds + team-market EV (books discovered 2026-07-02). Player-prop
+# pricing for NRLW stays CI-side (fair odds) until the site's odds pages are
+# comp-aware; this keeps the NRLW markets page EV fresh.
+TRACK=nrlw "$PY" src/odds.py            || echo "$(ts) nrlw odds nonzero"
+TRACK=nrlw "$PY" src/pricing.py team    || echo "$(ts) nrlw pricing team nonzero"
+TRACK=nrlw "$PY" src/export_site_data.py || echo "$(ts) nrlw export nonzero"
+
 # SuperCoach feed for nrl24-0.com — refresh at most once a day (prices/news move
 # weekly-ish; it pulls a per-round score series, heavier than the odds scrape).
 SC=reports/site/supercoach.json

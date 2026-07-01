@@ -273,8 +273,8 @@ SB_HDR = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 SB_NRL_COMP = 3436
 
 
-def sportsbet_events():
-    d = _get(f"{SB}/sportsbook-sports/Sportsbook/Sports/Competitions/{SB_NRL_COMP}"
+def sportsbet_events(comp=None):
+    d = _get(f"{SB}/sportsbook-sports/Sportsbook/Sports/Competitions/{comp or SB_NRL_COMP}"
              "?displayType=default&eventFilter=matches", SB_HDR)
     out = []
     if not d:
@@ -376,10 +376,22 @@ def _plus_line(name):
     return float(m.group(1)) - 0.5 if m else None
 
 
-def fetch_sportsbet():
+# Per-track book competition identifiers (discovered from the live AU feeds
+# 2026-07-02; NRLW season live). Ladbrokes has no names on its event feed, so it
+# selects by event-name heuristic: men's = modal competition, NRLW = events named
+# "<Club> Women". soo/soow stay unwired (player-prop-only tracks, no match odds).
+BOOK_COMPS = {
+    "nrl":  {"sb_comp": SB_NRL_COMP, "pb_name": "nrl", "tab_comp": "NRL",
+             "dab_name": "nrl", "lad_mode": "modal"},
+    "nrlw": {"sb_comp": 23276, "pb_name": "nrlw", "tab_comp": "NRL Womens",
+             "dab_name": "nrl (w)", "lad_mode": "women"},
+}
+
+
+def fetch_sportsbet(cfg=None):
     rows = []
-    evs = sportsbet_events()
-    print(f"  [sportsbet] {len(evs)} NRL events")
+    evs = sportsbet_events((cfg or {}).get("sb_comp"))
+    print(f"  [sportsbet] {len(evs)} events")
     for ev in evs:
         r = sportsbet_event_rows(ev)
         rows.extend(r)
@@ -403,8 +415,12 @@ def _lad_decimal(price):
     return decimal(odds.get("numerator"), odds.get("denominator"))
 
 
-def ladbrokes_events():
-    """Enumerate NRL events (uuid + names) via the hash-free event-request endpoint."""
+def ladbrokes_events(mode="modal"):
+    """Enumerate rugby-league events (uuid + names) via the hash-free event-request
+    endpoint. The feed carries no competition names, so selection is heuristic:
+      mode="modal"  -> the competition most events share (men's NRL in season)
+      mode="women"  -> events named "<Club> Women ..." (NRLW)
+    """
     u = f'{LAD}/v2/sport/event-request?category_ids=["{RUGBY_LEAGUE_CAT}"]'
     d = _get(u, LAD_HDR)
     out = []
@@ -415,16 +431,20 @@ def ladbrokes_events():
         nm = e.get("name", "")
         if " vs " not in nm and " v " not in nm:
             continue  # skip futures/outrights
-        # only AU NRL: heuristic on competition or known team names
         out.append({"eventId": eid, "name": nm,
                     "start": e.get("event_start") or e.get("advertised_start"),
                     "competition_id": e.get("competition_id")})
-    # keep the NRL competition (the one most events share) — filter to the modal comp
-    if out:
-        from collections import Counter
-        modal = Counter(o["competition_id"] for o in out).most_common(1)[0][0]
-        out = [o for o in out if o["competition_id"] == modal]
-    return out
+    if not out:
+        return out
+    if mode == "women":
+        return [o for o in out if " women" in o["name"].lower()]
+    # modal: the men's comp is the one most non-women events share
+    from collections import Counter
+    men = [o for o in out if " women" not in o["name"].lower()]
+    if not men:
+        return []
+    modal = Counter(o["competition_id"] for o in men).most_common(1)[0][0]
+    return [o for o in men if o["competition_id"] == modal]
 
 
 def ladbrokes_event_rows(ev):
@@ -528,10 +548,10 @@ def _lad_iso(s):
         return None
 
 
-def fetch_ladbrokes():
+def fetch_ladbrokes(cfg=None):
     rows = []
-    evs = ladbrokes_events()
-    print(f"  [ladbrokes] {len(evs)} NRL events")
+    evs = ladbrokes_events((cfg or {}).get("lad_mode", "modal"))
+    print(f"  [ladbrokes] {len(evs)} events")
     for ev in evs:
         rows.extend(ladbrokes_event_rows(ev))
     print(f"  [ladbrokes] {len(rows)} market rows")
@@ -591,12 +611,12 @@ def _dab_get(creq, headers, path):
     return None
 
 
-def _dab_nrl_competition(creq, headers):
+def _dab_nrl_competition(creq, headers, name="nrl"):
+    """Find a Dabble competition by exact (lowercased) name — "nrl" / "nrl (w)"."""
     d = _dab_get(creq, headers, "/competitions")
     comps = (d.get("data", d) if isinstance(d, dict) else d) or []
-    rl = [c for c in comps if "rugby league" in str(c.get("sportName", "")).lower()] or comps
     for c in comps:
-        if str(c.get("name", "")).strip().lower() == "nrl":
+        if str(c.get("name", "")).strip().lower() == name:
             return c
     return None
 
@@ -691,13 +711,13 @@ def dabble_fixture_rows(creq, headers, fixture):
     return rows
 
 
-def fetch_dabble():
+def fetch_dabble(cfg=None):
     creq, headers = _dab_session()
     if creq is None:
         return []
-    comp = _dab_nrl_competition(creq, headers)
+    comp = _dab_nrl_competition(creq, headers, (cfg or {}).get("dab_name", "nrl"))
     if not comp:
-        print("  [dabble] NRL competition not found (token expired?)")
+        print("  [dabble] competition not found (token expired?)")
         return []
     fx = _dab_get(creq, headers,
                   f"/frontend-api/competitions/{comp['id']}/sport-fixtures"
@@ -733,7 +753,8 @@ def _cffi_get(url, headers, params=None):
         return None
 
 
-def pointsbet_nrl_key():
+def pointsbet_nrl_key(name="nrl"):
+    """Competition key by exact (lowercased) name — "nrl" / "nrlw"."""
     d = _cffi_get(f"{PB_V2}/sports/list/", PB_HDR)
     if not d:
         return None
@@ -741,15 +762,15 @@ def pointsbet_nrl_key():
     for s in sports:
         if "rugby league" in str(s.get("name", "")).lower():
             for c in s.get("competitions", []):
-                if str(c.get("name", "")).strip().lower() == "nrl":
+                if str(c.get("name", "")).strip().lower() == name:
                     return c.get("key") or c.get("competitionKey") or c.get("id")
     return None
 
 
-def fetch_pointsbet():
-    key = pointsbet_nrl_key()
+def fetch_pointsbet(cfg=None):
+    key = pointsbet_nrl_key((cfg or {}).get("pb_name", "nrl"))
     if not key:
-        print("  [pointsbet] NRL competition not found")
+        print("  [pointsbet] competition not found")
         return []
     feat = _cffi_get(f"{PB_MES}/events/featured/competition/{key}", PB_HDR)
     evs = (feat.get("events", []) if isinstance(feat, dict) else feat) or []
@@ -851,17 +872,19 @@ def _tab_token():
     return None
 
 
-def fetch_tab():
+def fetch_tab(cfg=None):
+    from urllib.parse import quote
     tok = _tab_token()
     if not tok:
         print("  [tab] no TAB_ACCESS_TOKEN / TAB_CLIENT_ID+SECRET — skipping")
         return []
     hdr = {"Authorization": f"Bearer {tok}", "Accept": "application/json",
            "User-Agent": "Mozilla/5.0"}
-    d = _cffi_get(f"{TAB_BASE}/sports/Rugby%20League/competitions/NRL"
+    comp = (cfg or {}).get("tab_comp", "NRL")
+    d = _cffi_get(f"{TAB_BASE}/sports/Rugby%20League/competitions/{quote(comp)}"
                   "?jurisdiction=VIC&homeState=VIC", hdr)
     if not d:
-        print("  [tab] NRL competition fetch failed (token expired?)")
+        print(f"  [tab] {comp} competition fetch failed (token expired?)")
         return []
     rows, fetched = [], now_iso()
     for match in d.get("matches", []):
@@ -982,11 +1005,11 @@ CARRY_MAX_HOURS = 48
 def main():
     track = T.current()
     T.ensure_dirs(track)
-    # The book fetchers target the men's NRL competitions (comp ids / "NRL" names are
-    # hard-coded per book). NRLW / Origin book odds need per-book competition discovery
-    # (their NRLW comp ids differ) — not wired yet, so for non-men's tracks we write an
-    # empty snapshot rather than mislabelling men's odds as that track's.
-    if track.name != "nrl":
+    # Book competition config per track (BOOK_COMPS). Origin tracks stay unwired
+    # (player-prop-only; no dedicated match odds) — they get an empty snapshot
+    # rather than mislabelling men's odds as that track's.
+    cfg = BOOK_COMPS.get(track.name)
+    if cfg is None:
         cols = ["book", "event_name", "home", "away", "start_iso", "category", "stat",
                 "kind", "player", "team", "line", "over", "under", "single", "market_raw",
                 "selection_raw", "fetched_at", "playerId", "matched_team"]
@@ -1001,7 +1024,7 @@ def main():
                      ("dabble", fetch_dabble), ("pointsbet", fetch_pointsbet),
                      ("tab", fetch_tab)]:
         try:
-            fetched[name] = fn() or []
+            fetched[name] = fn(cfg) or []
         except Exception as e:
             print(f"  [{name}] ERROR", repr(e))
             fetched[name] = []
