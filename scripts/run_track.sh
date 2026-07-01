@@ -17,14 +17,19 @@ run() { echo "::group::[$TRACK] $1"; "$PY" "src/$1.py" "${@:2}"; echo "::endgrou
 
 case "$TRACK" in
   nrl)
-    run ingest; run features; run train; run run_round
+    run ingest; run features; run train
+    run team_model train          # match-outcome model (H2H / line / total)
+    run run_round                 # predicts props + match markets for the round
     run analysis; run tryscorer; run kicker; run player_points
+    # Men's site bundle (incl. match-market EV vs live books) is built by the AU
+    # odds cron: it fetches odds, then runs `pricing.py team` + `export_site_data`.
     ;;
   nrlw)
     run ingest; run features; run train
     run team_model train
     run run_round                 # predicts props + match markets for the round
     run tryscorer; run kicker; run player_points
+    run pricing team              # model-fair H2H/line/total (+EV once NRLW odds land)
     run export_site_data
     ;;
   soo|soow)

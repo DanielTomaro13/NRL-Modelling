@@ -234,10 +234,41 @@ def price_snapshot(odds_path=None, preds_path=None, disp_path=None,
 
 
 # --------------------------------------------------------------------------- match markets (H2H / line / total)
-def team_markets(track=None, books=None):
+def _norm(s):
+    import re as _re
+    return _re.sub(r"[^a-z]", "", (s or "").lower())
+
+
+def _best_match_odds(mk, home, away):
+    """From a book match-market snapshot for one event, return best available
+    head-to-head prices per side + total over/under prices, keyed by book."""
+    hk, ak = _norm(home), _norm(away)
+    best = {"home": (None, None), "away": (None, None),   # (price, book)
+            "line": [], "total_over": (None, None), "total_under": (None, None),
+            "total_line": None}
+    for _, r in mk.iterrows():
+        stat, kind, price = r.get("stat"), r.get("kind"), r.get("single")
+        if stat == "head_to_head" and price and kind in ("home", "away"):
+            if best[kind][0] is None or price > best[kind][0]:
+                best[kind] = (float(price), r.get("book"))
+        elif stat == "line" and price and kind in ("home", "away"):
+            best["line"].append((kind, r.get("line"), float(price), r.get("book")))
+        elif stat == "total":
+            if r.get("over"):
+                if best["total_over"][0] is None or r["over"] > best["total_over"][0]:
+                    best["total_over"] = (float(r["over"]), r.get("book"))
+            if r.get("under"):
+                if best["total_under"][0] is None or r["under"] > best["total_under"][0]:
+                    best["total_under"] = (float(r["under"]), r.get("book"))
+            if r.get("line") is not None:
+                best["total_line"] = float(r["line"])
+    return best
+
+
+def team_markets(track=None):
     """Model fair odds for head-to-head, line (handicap) and total, from the
-    match-outcome model's per-match margin/total predictions. Books are optional:
-    if an odds snapshot with category=='match' rows is supplied we also compute EV.
+    match-outcome model's per-match margin/total predictions, plus EV against the
+    live book match markets in the odds snapshot (category=="match") if present.
 
     margin ~ Normal(mu_m, sd_m): P(home win) = Phi(mu_m / sd_m); line cover at
     handicap h (home -h) = P(margin > h). total ~ Normal(mu_t, sd_t): priced with
@@ -251,43 +282,80 @@ def team_markets(track=None, books=None):
         print(f"no {tp_path} — run team_model.py predict first")
         return pd.DataFrame()
 
+    # optional live book match markets
+    try:
+        odds = pd.read_parquet(T.report("odds_snapshot.parquet", track))
+        odds = odds[odds.get("category") == "match"] if "category" in odds else odds.iloc[0:0]
+    except Exception:
+        odds = pd.DataFrame()
+
     rows = []
     for _, r in tp.iterrows():
         mu_m, sd_m = float(r["pred_margin"]), max(float(r["sigma_margin"]), 1e-6)
         mu_t, sd_t = float(r["pred_total"]), max(float(r["sigma_total"]), 1e-6)
         p_home = float(norm.cdf(mu_m / sd_m))           # P(margin > 0)
         line = round(mu_m * 2) / 2                       # model's fair handicap (home -line)
-        # at the fair line the home cover prob is ~0.5 by construction; expose it anyway
-        p_home_cover = 1 - float(norm.cdf((line - mu_m) / sd_m))
         total_line = round(mu_t * 2) / 2
         p_over, p_under, _ = over_under_probs(mu_t, sd_t, total_line)
-        rows.append({
+        row = {
             "matchId": r["matchId"], "round": int(r["roundNumber"]),
             "home": r["home"], "away": r["away"], "start_iso": r.get("start_iso"),
             "pred_margin": round(mu_m, 1), "pred_total": round(mu_t, 1),
             "p_home": round(p_home, 3), "p_away": round(1 - p_home, 3),
             "fair_home": fair_odds(p_home), "fair_away": fair_odds(1 - p_home),
             "line_home": -line, "line_away": line,
-            "p_home_cover": round(p_home_cover, 3),
             "total_line": total_line, "p_over": round(p_over, 3), "p_under": round(p_under, 3),
             "fair_over": fair_odds(p_over), "fair_under": fair_odds(p_under),
-        })
+        }
+        # match this event's book rows by team names and compute EV on best prices
+        if len(odds):
+            hk, ak = _norm(r["home"]), _norm(r["away"])
+            mk = odds[odds.apply(lambda x: {_norm(x.get("home")), _norm(x.get("away"))}
+                                 == {hk, ak}, axis=1)]
+            if len(mk):
+                b = _best_match_odds(mk, r["home"], r["away"])
+                if b["home"][0]:
+                    row.update(book_home=b["home"][1], book_home_price=b["home"][0],
+                               ev_home=round((p_home * b["home"][0] - 1) * 100, 1))
+                if b["away"][0]:
+                    row.update(book_away=b["away"][1], book_away_price=b["away"][0],
+                               ev_away=round(((1 - p_home) * b["away"][0] - 1) * 100, 1))
+                if b["total_over"][0] and b["total_line"] is not None:
+                    po, _, _ = over_under_probs(mu_t, sd_t, b["total_line"])
+                    row.update(book_over=b["total_over"][1], book_over_price=b["total_over"][0],
+                               book_total_line=b["total_line"],
+                               ev_over=round((po * b["total_over"][0] - 1) * 100, 1))
+                if b["total_under"][0] and b["total_line"] is not None:
+                    _, pu, _ = over_under_probs(mu_t, sd_t, b["total_line"])
+                    row.update(book_under=b["total_under"][1], book_under_price=b["total_under"][0],
+                               ev_under=round((pu * b["total_under"][0] - 1) * 100, 1))
+                # best line: model P(margin > handicap) vs each posted home/away line
+                best_line_ev = None
+                for kind, hcap, price, book in b["line"]:
+                    if hcap is None:
+                        continue
+                    p = (1 - float(norm.cdf((hcap - mu_m) / sd_m))) if kind == "home" \
+                        else float(norm.cdf((hcap - mu_m) / sd_m))
+                    ev = (p * price - 1) * 100
+                    if best_line_ev is None or ev > best_line_ev["ev_line"]:
+                        best_line_ev = {"book_line": book, "book_line_side": kind,
+                                        "book_line_hcap": hcap, "book_line_price": price,
+                                        "ev_line": round(ev, 1)}
+                if best_line_ev:
+                    row.update(best_line_ev)
+        rows.append(row)
     out = pd.DataFrame(rows)
-
-    # optional EV vs book head-to-head prices (category == "match", stat == "head_to_head")
-    if books is not None and len(books):
-        mk = books[(books.get("category") == "match")] if "category" in books else books.iloc[0:0]
-        # left as a hook: the match-market book scraper (odds.py) emits one row per
-        # team with a "single" price; join on event teams when that lands.
-        out.attrs["n_book_rows"] = int(len(mk))
 
     T.ensure_dirs(track)
     out.to_parquet(T.report("team_edges.parquet", track), index=False)
     out.to_json(T.report("team_markets.json", track), orient="records")
-    print(f"[{track.name}] wrote {T.report('team_markets.json', track)}: {len(out)} matches")
+    n_ev = int(out["ev_home"].notna().sum()) if "ev_home" in out else 0
+    print(f"[{track.name}] wrote {T.report('team_markets.json', track)}: {len(out)} matches, "
+          f"{n_ev} with live H2H odds")
     if len(out):
-        print(out[["home", "away", "p_home", "fair_home", "fair_away",
-                   "total_line", "fair_over", "fair_under"]].to_string(index=False))
+        show = [c for c in ["home", "away", "p_home", "fair_home", "book_home_price",
+                            "ev_home", "fair_over", "fair_under"] if c in out]
+        print(out[show].to_string(index=False))
     return out
 
 
